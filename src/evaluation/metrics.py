@@ -1,0 +1,734 @@
+"""
+Custom evaluation metrics for ConvFinQA using DeepEval's proper G-Eval pattern.
+"""
+
+import concurrent.futures
+import re
+from concurrent.futures import ThreadPoolExecutor
+from typing import TYPE_CHECKING, Any
+
+from deepeval.metrics.base_metric import BaseMetric
+from deepeval.metrics.conversational_g_eval.conversational_g_eval import (
+    ConversationalGEval,
+)
+from deepeval.metrics.g_eval.g_eval import GEval
+from deepeval.test_case.conversational_test_case import TurnParams
+from deepeval.test_case.llm_test_case import LLMTestCase, LLMTestCaseParams
+
+from ..core.logger import get_logger
+
+logger = get_logger(__name__)
+
+if TYPE_CHECKING:
+    from ..data.loader import DataLoader
+    from ..functions.agent import ConvFinQAAgent
+
+
+class ExecutionAccuracyMetric(BaseMetric):
+    """
+    Execution Accuracy metric for ConvFinQA using exact numeric matching.
+
+    This metric implements the exact evaluation methodology used in the ConvFinQA paper
+    to replicate baseline figures. It performs exact match on numeric outputs without
+    using LLM-as-a-judge.
+    """
+
+    def __init__(self, threshold: float = 1.0):
+        """Initialize execution accuracy metric.
+
+        Args:
+            threshold: Threshold for success (1.0 for exact match)
+        """
+        self.threshold: float = threshold
+        self.score: float = 0.0
+        self.reason: str = ""
+        self.success: bool = False
+
+    @property
+    def __name__(self) -> str:
+        return "Execution Accuracy"
+
+    def measure(self, test_case: LLMTestCase) -> float:
+        """Measure execution accuracy by exact numeric match.
+
+        Args:
+            test_case: The test case containing actual_output and expected_output
+
+        Returns:
+            Score of 1.0 for exact match, 0.0 otherwise
+        """
+        if not test_case.actual_output or not test_case.expected_output:
+            self.reason = "Missing actual_output or expected_output"
+            self.score = 0.0
+            self.success = False
+            return self.score
+
+        # Extract numeric values from both outputs
+        actual_num = self._extract_numeric_value(test_case.actual_output)
+        expected_num = self._extract_numeric_value(test_case.expected_output)
+
+        # Check for exact match
+        if self._numeric_match(actual_num, expected_num):
+            self.score = 1.0
+            self.reason = f"Exact match: {actual_num} == {expected_num}"
+            self.success = True
+        else:
+            self.score = 0.0
+            self.reason = (
+                f"No match: {actual_num} != {expected_num} (actual vs expected)"
+            )
+            self.success = False
+
+        return self.score
+
+    async def a_measure(self, test_case: LLMTestCase) -> float:
+        """Async version of measure (same implementation since no LLM calls)."""
+        return self.measure(test_case)
+
+    def is_successful(self) -> bool:
+        """Check if the metric was successful."""
+        return self.success
+
+    def _extract_numeric_value(self, text: str) -> str | None:
+        """Extract the primary numeric value from text."""
+        if not text:
+            return None
+
+        # Clean the text
+        text = text.strip()
+
+        # Strategy 1: Look for final_answer() tool output or clean numeric line
+        lines = text.split("\n")
+        for line in reversed(lines):  # Check from end backwards
+            line = line.strip()
+            if not line:
+                continue
+            # Look for patterns like "60.94" or "-4" on their own line
+            if re.match(r"^[-+]?\d*\.?\d+$", line):
+                return line
+            # Look for final_answer output
+            if "final_answer" in line.lower() and ":" in line:
+                parts = line.split(":")[-1].strip()
+                if re.match(r"^[-+]?\d*\.?\d+$", parts):
+                    return parts
+
+        # Strategy 2: Enhanced regex for comprehensive numeric extraction
+        # This pattern handles: $123.45, -123, (123), 123.45%, 1,234.56
+        # Order matters - more specific patterns first
+        patterns = [
+            r"(?:^|\s)(\([-+]?\d+(?:,\d{3})*(?:\.\d+)?\))",  # (123.45) - parentheses for negatives
+            r"(?:^|\s)\$?([-+]?\d{1,3}(?:,\d{3})*\.\d+)%?(?:\s|$)",  # Decimals with dollars/% like $123.45 or 60.94
+            r"(?:^|\s)\$?([-+]?\d*\.\d+)(?:\s|$)",  # Decimals like .45 or 123.45
+            r"(?:^|\s)\$?([-+]?\d{1,3}(?:,\d{3})*)%?(?:\s|$)",  # Large integers with commas
+            r"(?:^|\s)([-+]?\d+)(?:\s|$)",  # Regular integers (but avoid years)
+        ]
+
+        best_match = ""
+        best_length = 0
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                cleaned = str(match).replace(",", "").replace("$", "").replace("%", "")
+
+                # Handle parentheses negatives: (123) -> -123
+                if cleaned.startswith("(") and cleaned.endswith(")"):
+                    cleaned = "-" + cleaned[1:-1]
+
+                # Skip if it's not a valid number
+                try:
+                    num_value = float(cleaned)
+
+                    # Skip likely years (1900-2100) unless they're the only option
+                    if 1900 <= abs(num_value) <= 2100 and "." not in cleaned:
+                        # Only use years if nothing else found
+                        if not best_match:
+                            continue
+
+                    # Prefer decimal numbers over integers when both are found
+                    current_score = len(cleaned.replace(".", "").replace("-", ""))
+                    if "." in cleaned:
+                        current_score += 10  # Boost score for decimals
+
+                    if current_score > best_length:
+                        best_match = cleaned
+                        best_length = current_score
+                except ValueError:
+                    continue
+
+        return best_match if best_match else None
+
+    def _numeric_match(self, actual_num: str | None, expected_num: str | None) -> bool:
+        """Check if two numeric values match exactly."""
+        # If we can't extract numbers from either, fall back to string comparison
+        if actual_num is None or expected_num is None:
+            return actual_num is None and expected_num is None
+
+        try:
+            # Convert to floats and compare with small tolerance for floating point errors
+            actual_float = float(actual_num)
+            expected_float = float(expected_num)
+            return abs(actual_float - expected_float) < 1e-6
+        except ValueError:
+            # If conversion fails, fall back to string comparison
+            return actual_num == expected_num
+
+
+def _evaluate_single_record(
+    record: Any,
+    data_loader: "DataLoader",
+    model: str,
+    max_questions_per_record: int | None = None,
+) -> list[dict[str, Any]]:
+    """Evaluate a single record with its own agent instance.
+
+    This function is designed to be thread-safe by creating a separate agent
+    instance for each record evaluation.
+
+    Args:
+        record: The record to evaluate
+        data_loader: DataLoader instance
+        model: The model name to use
+        max_questions_per_record: Maximum questions per record (None = all questions)
+
+    Returns:
+        List of result dictionaries for this record
+    """
+    # Import here to avoid circular imports
+    from ..functions.agent import ConvFinQAAgent
+
+    # Create a separate agent instance for this record (thread-safe)
+    agent = ConvFinQAAgent(model=model)
+
+    # Set record context for agent and start fresh conversation
+    agent.set_record_context(record, data_loader)
+
+    # Clear any previous conversation state to prevent context bleed
+    agent.clear_history()
+
+    # Determine if this is a hybrid conversation
+    is_hybrid = getattr(record.features, "has_type2_question", False)
+
+    # Process questions in this record
+    questions_to_process = record.dialogue.conv_questions
+    if max_questions_per_record:
+        questions_to_process = questions_to_process[:max_questions_per_record]
+
+    record_results = []
+
+    for turn, (question, expected_answer) in enumerate(
+        zip(
+            questions_to_process,
+            record.dialogue.conv_answers[: len(questions_to_process)],
+            strict=False,
+        ),
+        1,
+    ):
+        try:
+            # Get agent response
+            actual_answer = agent.chat(question)
+
+            # Check execution accuracy using existing metric (with question context for DSPy)
+            is_correct = calculate_execution_accuracy(
+                actual_answer, expected_answer, question
+            )
+
+            # Record result
+            record_results.append(
+                {
+                    "record_id": record.id,
+                    "turn": turn,
+                    "question": question,
+                    "expected": expected_answer,
+                    "actual": actual_answer,
+                    "is_correct": is_correct,
+                    "is_hybrid_conversation": is_hybrid,
+                }
+            )
+
+        except Exception as e:
+            # Record as incorrect on error
+            record_results.append(
+                {
+                    "record_id": record.id,
+                    "turn": turn,
+                    "question": question,
+                    "expected": expected_answer,
+                    "actual": f"ERROR: {str(e)}",
+                    "is_correct": False,
+                    "is_hybrid_conversation": is_hybrid,
+                }
+            )
+
+    return record_results
+
+
+def evaluate_agent_on_dataset(
+    data_loader: "DataLoader",
+    agent: "ConvFinQAAgent",
+    max_records: int | None = None,
+    max_questions_per_record: int | None = None,
+    parallel: bool = False,
+    max_workers: int | None = None,
+) -> "ConvFinQAEvaluationResults":
+    """Evaluate agent on dataset with ConvFinQA baseline comparison format.
+
+    Args:
+        data_loader: DataLoader instance
+        agent: ConvFinQAAgent instance (only used for model name if parallel=True)
+        max_records: Maximum number of records to evaluate (None = all dev records)
+        max_questions_per_record: Maximum questions per record (None = all questions)
+        parallel: Whether to process records in parallel (default: False)
+        max_workers: Maximum number of worker threads for parallel processing (default: None, uses system default)
+
+    Returns:
+        ConvFinQAEvaluationResults with comprehensive metrics
+    """
+    results = ConvFinQAEvaluationResults()
+
+    # Use dev split for evaluation (matches paper methodology)
+    if data_loader.dataset is None:
+        raise ValueError("Dataset not loaded")
+    records_to_evaluate = data_loader.dataset.dev
+    if max_records:
+        records_to_evaluate = records_to_evaluate[:max_records]
+
+    if parallel:
+        # Parallel evaluation using ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all records for parallel processing
+            future_to_record = {
+                executor.submit(
+                    _evaluate_single_record,
+                    record,
+                    data_loader,
+                    agent.model,  # Use agent's model name
+                    max_questions_per_record,
+                ): record
+                for record in records_to_evaluate
+            }
+
+            # Collect results as they complete
+            for future in concurrent.futures.as_completed(future_to_record):
+                try:
+                    record_results = future.result()
+                    # Add all results from this record
+                    for result in record_results:
+                        results.add_result(
+                            record_id=result["record_id"],
+                            turn=result["turn"],
+                            question=result["question"],
+                            expected=result["expected"],
+                            actual=result["actual"],
+                            is_correct=result["is_correct"],
+                            is_hybrid_conversation=result["is_hybrid_conversation"],
+                        )
+                except Exception as e:
+                    # Handle any unexpected errors
+                    record = future_to_record[future]
+                    logger.error(f"Record {record.id} generated an exception: {e}")
+    else:
+        # Sequential evaluation (original behavior)
+        for _, record in enumerate(records_to_evaluate):
+            # Set record context for agent and start fresh conversation
+            agent.set_record_context(record, data_loader)
+
+            # Clear any previous conversation state to prevent context bleed
+            agent.clear_history()
+
+            # Determine if this is a hybrid conversation
+            is_hybrid = getattr(record.features, "has_type2_question", False)
+
+            # Process questions in this record
+            questions_to_process = record.dialogue.conv_questions
+            if max_questions_per_record:
+                questions_to_process = questions_to_process[:max_questions_per_record]
+
+            for turn, (question, expected_answer) in enumerate(
+                zip(
+                    questions_to_process,
+                    record.dialogue.conv_answers[: len(questions_to_process)],
+                    strict=False,
+                ),
+                1,
+            ):
+                try:
+                    # Get agent response
+                    actual_answer = agent.chat(question)
+
+                    # Check execution accuracy using existing metric (with question context for DSPy)
+                    is_correct = calculate_execution_accuracy(
+                        actual_answer, expected_answer, question
+                    )
+
+                    # Record result
+                    results.add_result(
+                        record_id=record.id,
+                        turn=turn,
+                        question=question,
+                        expected=expected_answer,
+                        actual=actual_answer,
+                        is_correct=is_correct,
+                        is_hybrid_conversation=is_hybrid,
+                    )
+
+                except Exception as e:
+                    # Record as incorrect on error
+                    results.add_result(
+                        record_id=record.id,
+                        turn=turn,
+                        question=question,
+                        expected=expected_answer,
+                        actual=f"ERROR: {str(e)}",
+                        is_correct=False,
+                        is_hybrid_conversation=is_hybrid,
+                    )
+
+    return results
+
+
+def calculate_execution_accuracy(
+    actual_answer: str, expected_answer: str, question: str = ""
+) -> bool:
+    """Calculate execution accuracy by exact match on numeric outputs.
+
+    This matches the evaluation methodology used in the ConvFinQA paper
+    for comparing against baseline figures. Uses enhanced DSPy extraction for better accuracy.
+
+    Args:
+        actual_answer: The agent's response
+        expected_answer: The ground truth answer
+        question: Original question for context (helps DSPy extraction)
+
+    Returns:
+        True if the answers match exactly (for execution accuracy), False otherwise
+    """
+    # Try enhanced DSPy extraction first if available
+    try:
+        import os
+
+        import dspy
+
+        from .dspy_extraction import DSPyExecutionAccuracyMetric
+
+        # Enhanced DSPy auto-configuration for better performance
+        if not hasattr(dspy.settings, "lm") or dspy.settings.lm is None:
+            api_key = os.getenv("OPENAI_API_KEY")
+            if api_key:
+                try:
+                    # Use GPT-4o-mini for cost-effective intelligent extraction
+                    lm = dspy.LM("openai/gpt-4o-mini", api_key=api_key)
+                    dspy.configure(lm=lm)
+                    logger.info(
+                        "Enhanced DSPy configured with OpenAI GPT-4o-mini for intelligent extraction"
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to auto-configure enhanced DSPy: {e}")
+
+        # Check if DSPy is now configured for enhanced processing
+        if hasattr(dspy.settings, "lm") and dspy.settings.lm is not None:
+            metric = DSPyExecutionAccuracyMetric()
+            from deepeval.test_case.llm_test_case import LLMTestCase
+
+            test_case = LLMTestCase(
+                input=question,
+                actual_output=actual_answer,
+                expected_output=expected_answer,
+            )
+
+            # Use enhanced DSPy extraction with better context
+            result = metric.measure(test_case, question=question)
+            logger.debug(
+                f"Enhanced DSPy extraction - Score: {result}, Reason: {metric.reason}"
+            )
+            return metric.is_successful()
+
+    except Exception as e:
+        logger.debug(
+            f"Enhanced DSPy extraction failed, falling back to basic matching: {e}"
+        )
+
+    # Fallback to basic numeric extraction if DSPy is not available
+    try:
+        # Clean both answers for comparison
+        actual_clean = _extract_numeric_value_basic(actual_answer)
+        expected_clean = _extract_numeric_value_basic(expected_answer)
+
+        # Check for exact numeric match
+        if actual_clean and expected_clean:
+            try:
+                actual_float = float(actual_clean)
+                expected_float = float(expected_clean)
+
+                # Use small tolerance for floating point comparison
+                tolerance = 1e-6
+                match = abs(actual_float - expected_float) < tolerance
+
+                logger.debug(
+                    f"Basic numeric comparison: {actual_float} vs {expected_float}, match: {match}"
+                )
+                return match
+            except ValueError:
+                # If numeric conversion fails, fall back to string comparison
+                match = actual_clean.strip() == expected_clean.strip()
+                logger.debug(
+                    f"String comparison fallback: '{actual_clean}' vs '{expected_clean}', match: {match}"
+                )
+                return match
+
+        return False
+
+    except Exception as e:
+        logger.error(f"All extraction methods failed: {e}")
+        return False
+
+
+def _extract_numeric_value_basic(text: str) -> str | None:
+    """Basic numeric extraction fallback when DSPy is not available."""
+    if not text:
+        return None
+
+    # Clean the text
+    text = text.strip()
+
+    # Remove common prefixes and suffixes
+    text = text.replace("$", "").replace(",", "").strip()
+
+    # Try to extract a number using basic patterns
+    import re
+
+    # Look for standalone numbers (including negative and decimals)
+    number_pattern = r"-?\d+\.?\d*"
+    numbers = re.findall(number_pattern, text)
+
+    if numbers:
+        # Return the last number found (often the final answer)
+        return str(numbers[-1])
+
+    return None
+
+
+def create_financial_accuracy_metric(threshold: float = 0.7) -> GEval:
+    """Create a G-Eval metric for financial calculation accuracy."""
+    return GEval(
+        name="Financial Accuracy",
+        criteria=(
+            "Evaluate whether the actual output contains accurate financial calculations, "
+            "correct numerical values, and factually correct financial information. "
+            "Consider mathematical precision, proper use of financial formulas, "
+            "and alignment with provided financial data."
+        ),
+        evaluation_params=[
+            LLMTestCaseParams.ACTUAL_OUTPUT,
+            LLMTestCaseParams.EXPECTED_OUTPUT,
+            LLMTestCaseParams.CONTEXT,
+        ],
+        threshold=threshold,
+    )
+
+
+def create_financial_relevance_metric(threshold: float = 0.7) -> GEval:
+    """Create a G-Eval metric for financial question relevance."""
+    return GEval(
+        name="Financial Relevance",
+        criteria=(
+            "Determine if the actual output directly addresses the financial question asked. "
+            "The response should be relevant to financial analysis, use appropriate "
+            "financial terminology, and focus on the specific financial aspects mentioned "
+            "in the input question."
+        ),
+        evaluation_params=[
+            LLMTestCaseParams.INPUT,
+            LLMTestCaseParams.ACTUAL_OUTPUT,
+        ],
+        threshold=threshold,
+    )
+
+
+def create_calculation_coherence_metric(threshold: float = 0.7) -> GEval:
+    """Create a G-Eval metric for financial calculation coherence."""
+    return GEval(
+        name="Calculation Coherence",
+        criteria=(
+            "Assess whether the financial calculations follow logical steps, "
+            "use consistent methodologies, and show clear reasoning from input data "
+            "to final results. Check for proper sequence of calculations and "
+            "reasonable intermediate steps."
+        ),
+        evaluation_params=[
+            LLMTestCaseParams.ACTUAL_OUTPUT,
+            LLMTestCaseParams.CONTEXT,
+        ],
+        threshold=threshold,
+    )
+
+
+def create_conversational_financial_metric(
+    threshold: float = 0.7,
+) -> ConversationalGEval:
+    """Create a ConversationalGEval metric for multi-turn financial conversations."""
+    return ConversationalGEval(
+        name="Conversational Financial Analysis",
+        criteria=(
+            "Evaluate the quality of conversational financial question answering. "
+            "Assess whether the assistant maintains context across turns, provides "
+            "consistent financial analysis, builds upon previous questions and answers, "
+            "and demonstrates understanding of the ongoing financial discussion. "
+            "Consider accuracy, relevance, and conversational flow."
+        ),
+        evaluation_params=[
+            TurnParams.CONTENT
+        ],  # Fixed: Use TurnParams instead of LLMTestCaseParams
+        threshold=threshold,
+    )
+
+
+# Convenience function to get all financial metrics
+def get_financial_metrics(threshold: float = 0.7) -> list[GEval]:
+    """Get a list of all financial evaluation metrics."""
+    return [
+        create_financial_accuracy_metric(threshold),
+        create_financial_relevance_metric(threshold),
+        create_calculation_coherence_metric(threshold),
+    ]
+
+
+class ConvFinQAEvaluationResults:
+    """Container for ConvFinQA evaluation results matching baseline format."""
+
+    def __init__(self) -> None:
+        self.total_questions = 0
+        self.correct_answers = 0
+        self.results_by_turn: dict[
+            int, dict[str, int]
+        ] = {}  # turn_number -> {correct: int, total: int}
+        self.results_by_type = {
+            "simple": {"correct": 0, "total": 0},
+            "hybrid": {"correct": 0, "total": 0},
+        }
+        self.detailed_results: list[
+            dict[str, Any]
+        ] = []  # List of individual question results
+
+    def add_result(
+        self,
+        record_id: str,
+        turn: int,
+        question: str,
+        expected: str,
+        actual: str,
+        is_correct: bool,
+        is_hybrid_conversation: bool = False,
+    ) -> None:
+        """Add a single question result."""
+        self.total_questions += 1
+        if is_correct:
+            self.correct_answers += 1
+
+        # Track by turn
+        if turn not in self.results_by_turn:
+            self.results_by_turn[turn] = {"correct": 0, "total": 0}
+        self.results_by_turn[turn]["total"] += 1
+        if is_correct:
+            self.results_by_turn[turn]["correct"] += 1
+
+        # Track by conversation type
+        conv_type = "hybrid" if is_hybrid_conversation else "simple"
+        self.results_by_type[conv_type]["total"] += 1
+        if is_correct:
+            self.results_by_type[conv_type]["correct"] += 1
+
+        # Store detailed result
+        self.detailed_results.append(
+            {
+                "record_id": record_id,
+                "turn": turn,
+                "question": question[:100] + "..." if len(question) > 100 else question,
+                "expected": expected,
+                "actual": actual,
+                "is_correct": is_correct,
+                "is_hybrid": is_hybrid_conversation,
+            }
+        )
+
+    @property
+    def execution_accuracy(self) -> float:
+        """Calculate execution accuracy (Exe Acc) matching ConvFinQA baseline format."""
+        return (
+            (self.correct_answers / self.total_questions * 100)
+            if self.total_questions > 0
+            else 0.0
+        )
+
+    def get_turn_accuracy(self, turn: int) -> float:
+        """Get accuracy for a specific turn number."""
+        if turn not in self.results_by_turn or self.results_by_turn[turn]["total"] == 0:
+            return 0.0
+        return (
+            float(
+                self.results_by_turn[turn]["correct"]
+                / self.results_by_turn[turn]["total"]
+            )
+            * 100
+        )
+
+    def get_conversation_type_accuracy(self, conv_type: str) -> float:
+        """Get accuracy for simple or hybrid conversations."""
+        if self.results_by_type[conv_type]["total"] == 0:
+            return 0.0
+        return (
+            float(
+                self.results_by_type[conv_type]["correct"]
+                / self.results_by_type[conv_type]["total"]
+            )
+            * 100
+        )
+
+    def print_baseline_comparison(self) -> None:
+        """Print results in format matching ConvFinQA baseline table."""
+        print("\n" + "=" * 60)  # noqa: T201
+        print("CONVFINQA EVALUATION RESULTS")  # noqa: T201
+        print("=" * 60)  # noqa: T201
+
+        print("\nModel Performance:")  # noqa: T201
+        print(f"Your Agent (Smol):        {self.execution_accuracy:.2f}%")  # noqa: T201
+
+        print("\nBaseline Comparison (from ConvFinQA paper):")  # noqa: T201
+        print("-" * 50)  # noqa: T201
+        print(f"{'Model':<30} {'Method':<25} {'Exe Acc':<8}")  # noqa: T201
+        print("-" * 50)  # noqa: T201
+        print(f"{'GPT-3':<30} {'answer-only-prompt':<25} {'24.09':<8}")  # noqa: T201
+        print(f"{'GPT-3':<30} {'CoT prompting':<25} {'40.63':<8}")  # noqa: T201
+        print(f"{'GPT-3':<30} {'DSL program':<25} {'45.15':<8}")  # noqa: T201
+        print(f"{'FinQANet(RoBERTa-large)':<30} {'DSL program':<25} {'68.90':<8}")  # noqa: T201
+        print("-" * 50)  # noqa: T201
+        print(f"{'Human Expert':<30} {'':<25} {'89.44':<8}")  # noqa: T201
+        print(  # noqa: T201
+            f"{'Your Agent (Smol)':<30} {'Function-calling':<25} {f'{self.execution_accuracy:.2f}':<8}"
+        )
+        print("-" * 50)  # noqa: T201
+
+        # Performance by conversation type
+        print("\nPerformance by Conversation Type:")  # noqa: T201
+        simple_acc = self.get_conversation_type_accuracy("simple")
+        hybrid_acc = self.get_conversation_type_accuracy("hybrid")
+        print(  # noqa: T201
+            f"Simple Conversations:  {simple_acc:.2f}% ({self.results_by_type['simple']['correct']}/{self.results_by_type['simple']['total']})"
+        )
+        print(  # noqa: T201
+            f"Hybrid Conversations:  {hybrid_acc:.2f}% ({self.results_by_type['hybrid']['correct']}/{self.results_by_type['hybrid']['total']})"
+        )
+
+        # Performance by turn (showing difficulty progression)
+        print("\nPerformance by Turn (Multi-turn Analysis):")  # noqa: T201
+        for turn in sorted(self.results_by_turn.keys()):
+            turn_acc = self.get_turn_accuracy(turn)
+            correct = self.results_by_turn[turn]["correct"]
+            total = self.results_by_turn[turn]["total"]
+            print(f"Turn {turn}:  {turn_acc:.2f}% ({correct}/{total})")  # noqa: T201
+
+        print("\nOverall Statistics:")  # noqa: T201
+        print(f"Total Questions Evaluated: {self.total_questions}")  # noqa: T201
+        print(f"Correct Answers: {self.correct_answers}")  # noqa: T201
+        print(f"Execution Accuracy: {self.execution_accuracy:.2f}%")  # noqa: T201
+        print("=" * 60)  # noqa: T201

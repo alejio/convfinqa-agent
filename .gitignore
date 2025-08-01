@@ -1,0 +1,33 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+
+# Virtual environments
+.env
+.venv
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# macOS
+.DS_Store
+
+.*cache
+
+
+
+uv.lock
+
+# Cursor rules
+.cursor/rules/
+
+# DeepEval
+.deepeval/
+.coverage
+
+.convfinqa_sessions/
+.convfinqa_sessions/*
+
+dataset.md
