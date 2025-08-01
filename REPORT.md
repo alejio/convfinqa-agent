@@ -202,12 +202,3 @@ Based on codebase analysis and the identified primary failure mode, the top thre
 **Solution**: Implement question complexity classification using existing DSPy infrastructure to select appropriate tool workflows and leverage rich tool outputs for context-aware responses.
 
 **Impact**: Better utilises existing infrastructure (conversation management, DSPy integration, rich tool outputs) and could improve performance by matching tool complexity to question complexity.
-
-## [may not apply] If & how you've used coding assistants or gen AI tools to help with this assignment
-Please be honest.
-
-Used Gen AI tools significantly, specifically the Claude Code extension in Cursor IDE.
-
-Claude Code was used initially to create a project plan consisting of specific milestones that delivered a self-contained, working solution allowing incremental improvements.
-
-To deliver the milestones, I used active prompting in Claude Code and targeted codebase edits.
