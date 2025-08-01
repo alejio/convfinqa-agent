@@ -119,39 +119,15 @@ class ConversationManager:
         Returns:
             List of extracted entity references.
         """
-        entities = []
+        entities: list[str] = []
 
-        # Simple keyword-based entity extraction
-        financial_keywords = [
-            "revenue",
-            "profit",
-            "loss",
-            "assets",
-            "liabilities",
-            "equity",
-            "cash flow",
-            "expenses",
-            "income",
-            "margin",
-            "quarter",
-            "year",
-            "Q1",
-            "Q2",
-            "Q3",
-            "Q4",
-            "2019",
-            "2020",
-            "2021",
-            "2022",
-            "2023",
-        ]
+        # Use shared financial terms for entity extraction
+        from .financial_terms import FinancialTerms
 
-        response_lower = response.lower()
-        for keyword in financial_keywords:
-            if keyword.lower() in response_lower:
-                entities.append(keyword)
+        entities.extend(FinancialTerms.extract_financial_terms(response))
 
         # Look for table references
+        response_lower = response.lower()
         if "table" in response_lower:
             entities.append("financial_table")
 

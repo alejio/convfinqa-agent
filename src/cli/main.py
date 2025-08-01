@@ -335,7 +335,7 @@ def evaluate(
     max_workers: int = typer.Option(
         None,
         "--max-workers",
-        help="Maximum number of worker threads for parallel processing (default: auto)",
+        help="Maximum number of worker threads for parallel processing (default: 4, max recommended: 8)",
     ),
 ) -> None:
     """Run comprehensive evaluation with ConvFinQA baseline comparison"""

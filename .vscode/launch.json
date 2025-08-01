@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Python: Debug test_conversation.py with pytest",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "pytest",
+        "args": [
+          "tests/"
+        ],
+        "justMyCode": false,
+        "console": "integratedTerminal"
+      }
+    ]
+  }

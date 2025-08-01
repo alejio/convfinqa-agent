@@ -2,9 +2,6 @@
 Custom evaluation metrics for ConvFinQA using DeepEval's proper G-Eval pattern.
 """
 
-import concurrent.futures
-import re
-from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from deepeval.metrics.base_metric import BaseMetric
@@ -90,88 +87,16 @@ class ExecutionAccuracyMetric(BaseMetric):
         return self.success
 
     def _extract_numeric_value(self, text: str) -> str | None:
-        """Extract the primary numeric value from text."""
-        if not text:
-            return None
+        """Extract the primary numeric value from text using shared utility."""
+        from ..core.numeric_utils import NumericExtractor
 
-        # Clean the text
-        text = text.strip()
-
-        # Strategy 1: Look for final_answer() tool output or clean numeric line
-        lines = text.split("\n")
-        for line in reversed(lines):  # Check from end backwards
-            line = line.strip()
-            if not line:
-                continue
-            # Look for patterns like "60.94" or "-4" on their own line
-            if re.match(r"^[-+]?\d*\.?\d+$", line):
-                return line
-            # Look for final_answer output
-            if "final_answer" in line.lower() and ":" in line:
-                parts = line.split(":")[-1].strip()
-                if re.match(r"^[-+]?\d*\.?\d+$", parts):
-                    return parts
-
-        # Strategy 2: Enhanced regex for comprehensive numeric extraction
-        # This pattern handles: $123.45, -123, (123), 123.45%, 1,234.56
-        # Order matters - more specific patterns first
-        patterns = [
-            r"(?:^|\s)(\([-+]?\d+(?:,\d{3})*(?:\.\d+)?\))",  # (123.45) - parentheses for negatives
-            r"(?:^|\s)\$?([-+]?\d{1,3}(?:,\d{3})*\.\d+)%?(?:\s|$)",  # Decimals with dollars/% like $123.45 or 60.94
-            r"(?:^|\s)\$?([-+]?\d*\.\d+)(?:\s|$)",  # Decimals like .45 or 123.45
-            r"(?:^|\s)\$?([-+]?\d{1,3}(?:,\d{3})*)%?(?:\s|$)",  # Large integers with commas
-            r"(?:^|\s)([-+]?\d+)(?:\s|$)",  # Regular integers (but avoid years)
-        ]
-
-        best_match = ""
-        best_length = 0
-
-        for pattern in patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
-            for match in matches:
-                cleaned = str(match).replace(",", "").replace("$", "").replace("%", "")
-
-                # Handle parentheses negatives: (123) -> -123
-                if cleaned.startswith("(") and cleaned.endswith(")"):
-                    cleaned = "-" + cleaned[1:-1]
-
-                # Skip if it's not a valid number
-                try:
-                    num_value = float(cleaned)
-
-                    # Skip likely years (1900-2100) unless they're the only option
-                    if 1900 <= abs(num_value) <= 2100 and "." not in cleaned:
-                        # Only use years if nothing else found
-                        if not best_match:
-                            continue
-
-                    # Prefer decimal numbers over integers when both are found
-                    current_score = len(cleaned.replace(".", "").replace("-", ""))
-                    if "." in cleaned:
-                        current_score += 10  # Boost score for decimals
-
-                    if current_score > best_length:
-                        best_match = cleaned
-                        best_length = current_score
-                except ValueError:
-                    continue
-
-        return best_match if best_match else None
+        return NumericExtractor.extract_primary_numeric_value(text)
 
     def _numeric_match(self, actual_num: str | None, expected_num: str | None) -> bool:
-        """Check if two numeric values match exactly."""
-        # If we can't extract numbers from either, fall back to string comparison
-        if actual_num is None or expected_num is None:
-            return actual_num is None and expected_num is None
+        """Check if two numeric values match exactly using shared utility."""
+        from ..core.numeric_utils import NumericExtractor
 
-        try:
-            # Convert to floats and compare with small tolerance for floating point errors
-            actual_float = float(actual_num)
-            expected_float = float(expected_num)
-            return abs(actual_float - expected_float) < 1e-6
-        except ValueError:
-            # If conversion fails, fall back to string comparison
-            return actual_num == expected_num
+        return NumericExtractor.numeric_match(actual_num, expected_num)
 
 
 def _evaluate_single_record(
@@ -179,6 +104,7 @@ def _evaluate_single_record(
     data_loader: "DataLoader",
     model: str,
     max_questions_per_record: int | None = None,
+    add_delay: bool = True,
 ) -> list[dict[str, Any]]:
     """Evaluate a single record with its own agent instance.
 
@@ -190,12 +116,21 @@ def _evaluate_single_record(
         data_loader: DataLoader instance
         model: The model name to use
         max_questions_per_record: Maximum questions per record (None = all questions)
+        add_delay: Whether to add small delays to reduce rate limiting
 
     Returns:
         List of result dictionaries for this record
     """
     # Import here to avoid circular imports
     from ..functions.agent import ConvFinQAAgent
+
+    # Add small random delay at start to stagger parallel requests (only for parallel mode)
+    if add_delay:
+        import random
+        import time
+
+        initial_delay = random.uniform(0.1, 0.5)
+        time.sleep(initial_delay)
 
     # Create a separate agent instance for this record (thread-safe)
     agent = ConvFinQAAgent(model=model)
@@ -225,6 +160,14 @@ def _evaluate_single_record(
         1,
     ):
         try:
+            # Add small delay between questions to reduce rate limiting pressure (only for parallel mode)
+            if add_delay and turn > 1:
+                import random
+                import time
+
+                inter_question_delay = random.uniform(0.2, 0.8)
+                time.sleep(inter_question_delay)
+
             # Get agent response
             actual_answer = agent.chat(question)
 
@@ -279,7 +222,7 @@ def evaluate_agent_on_dataset(
         max_records: Maximum number of records to evaluate (None = all dev records)
         max_questions_per_record: Maximum questions per record (None = all questions)
         parallel: Whether to process records in parallel (default: False)
-        max_workers: Maximum number of worker threads for parallel processing (default: None, uses system default)
+        max_workers: Maximum number of worker threads for parallel processing (default: 4, max 8 for OpenAI rate limits)
 
     Returns:
         ConvFinQAEvaluationResults with comprehensive metrics
@@ -294,7 +237,18 @@ def evaluate_agent_on_dataset(
         records_to_evaluate = records_to_evaluate[:max_records]
 
     if parallel:
-        # Parallel evaluation using ThreadPoolExecutor
+        # Parallel evaluation using ThreadPoolExecutor with OpenAI rate limit considerations
+        import concurrent.futures
+        from concurrent.futures import ThreadPoolExecutor
+
+        # Limit to 4 workers by default, max 8 to avoid rate limiting
+        if max_workers is None:
+            max_workers = 4
+        elif max_workers > 8:
+            logger.warning(
+                f"max_workers={max_workers} may cause rate limiting, consider ≤8"
+            )
+
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all records for parallel processing
             future_to_record = {
@@ -304,6 +258,7 @@ def evaluate_agent_on_dataset(
                     data_loader,
                     agent.model,  # Use agent's model name
                     max_questions_per_record,
+                    True,  # add_delay=True for parallel processing
                 ): record
                 for record in records_to_evaluate
             }
@@ -328,61 +283,30 @@ def evaluate_agent_on_dataset(
                     record = future_to_record[future]
                     logger.error(f"Record {record.id} generated an exception: {e}")
     else:
-        # Sequential evaluation (original behavior)
-        for _, record in enumerate(records_to_evaluate):
-            # Set record context for agent and start fresh conversation
-            agent.set_record_context(record, data_loader)
-
-            # Clear any previous conversation state to prevent context bleed
-            agent.clear_history()
-
-            # Determine if this is a hybrid conversation
-            is_hybrid = getattr(record.features, "has_type2_question", False)
-
-            # Process questions in this record
-            questions_to_process = record.dialogue.conv_questions
-            if max_questions_per_record:
-                questions_to_process = questions_to_process[:max_questions_per_record]
-
-            for turn, (question, expected_answer) in enumerate(
-                zip(
-                    questions_to_process,
-                    record.dialogue.conv_answers[: len(questions_to_process)],
-                    strict=False,
-                ),
-                1,
-            ):
-                try:
-                    # Get agent response
-                    actual_answer = agent.chat(question)
-
-                    # Check execution accuracy using existing metric (with question context for DSPy)
-                    is_correct = calculate_execution_accuracy(
-                        actual_answer, expected_answer, question
-                    )
-
-                    # Record result
+        # Sequential evaluation - use the same logic as parallel but without threading
+        for record in records_to_evaluate:
+            try:
+                record_results = _evaluate_single_record(
+                    record,
+                    data_loader,
+                    agent.model,
+                    max_questions_per_record,
+                    False,  # add_delay=False for sequential
+                )
+                # Add all results from this record
+                for result in record_results:
                     results.add_result(
-                        record_id=record.id,
-                        turn=turn,
-                        question=question,
-                        expected=expected_answer,
-                        actual=actual_answer,
-                        is_correct=is_correct,
-                        is_hybrid_conversation=is_hybrid,
+                        record_id=result["record_id"],
+                        turn=result["turn"],
+                        question=result["question"],
+                        expected=result["expected"],
+                        actual=result["actual"],
+                        is_correct=result["is_correct"],
+                        is_hybrid_conversation=result["is_hybrid_conversation"],
                     )
-
-                except Exception as e:
-                    # Record as incorrect on error
-                    results.add_result(
-                        record_id=record.id,
-                        turn=turn,
-                        question=question,
-                        expected=expected_answer,
-                        actual=f"ERROR: {str(e)}",
-                        is_correct=False,
-                        is_hybrid_conversation=is_hybrid,
-                    )
+            except Exception as e:
+                # Handle any unexpected errors at record level
+                logger.error(f"Record {record.id} generated an exception: {e}")
 
     return results
 
@@ -485,27 +409,9 @@ def calculate_execution_accuracy(
 
 def _extract_numeric_value_basic(text: str) -> str | None:
     """Basic numeric extraction fallback when DSPy is not available."""
-    if not text:
-        return None
+    from ..core.numeric_utils import NumericExtractor
 
-    # Clean the text
-    text = text.strip()
-
-    # Remove common prefixes and suffixes
-    text = text.replace("$", "").replace(",", "").strip()
-
-    # Try to extract a number using basic patterns
-    import re
-
-    # Look for standalone numbers (including negative and decimals)
-    number_pattern = r"-?\d+\.?\d*"
-    numbers = re.findall(number_pattern, text)
-
-    if numbers:
-        # Return the last number found (often the final answer)
-        return str(numbers[-1])
-
-    return None
+    return NumericExtractor.extract_basic_numeric_value(text)
 
 
 def create_financial_accuracy_metric(threshold: float = 0.7) -> GEval:

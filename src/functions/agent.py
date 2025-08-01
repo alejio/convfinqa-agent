@@ -3,6 +3,9 @@ LLM agent for ConvFinQA using smolagents CodeAgent.
 """
 
 import os
+import random
+import time
+from functools import wraps
 from typing import Any
 
 from dotenv import load_dotenv
@@ -27,6 +30,49 @@ from .tools import (
 load_dotenv()
 
 logger = get_logger(__name__)
+
+
+def with_rate_limiting(max_retries: int = 5, base_delay: float = 1.0) -> Any:
+    """Decorator to add exponential backoff retry logic for rate limiting.
+
+    Args:
+        max_retries: Maximum number of retry attempts
+        base_delay: Base delay in seconds before first retry
+    """
+
+    def decorator(func: Any) -> Any:
+        @wraps(func)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # Check for rate limiting errors
+                    if any(
+                        keyword in error_str
+                        for keyword in ["rate", "429", "too many requests", "quota"]
+                    ):
+                        if attempt == max_retries - 1:
+                            logger.error(
+                                f"Rate limiting failed after {max_retries} attempts: {e}"
+                            )
+                            raise
+
+                        # Exponential backoff with jitter
+                        delay = base_delay * (2**attempt) + random.uniform(0, 1)
+                        logger.warning(
+                            f"Rate limited (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {e}"
+                        )
+                        time.sleep(delay)
+                    else:
+                        # Non-rate-limiting error, don't retry
+                        raise
+            return None
+
+        return wrapper
+
+    return decorator
 
 
 class ConvFinQAAgent:
@@ -93,8 +139,9 @@ class ConvFinQAAgent:
         )
         logger.info(f"Set record context to: {record.id}, session: {session_id}")
 
+    @with_rate_limiting(max_retries=5, base_delay=1.0)
     def chat(self, message: str) -> str:
-        """Process a chat message using smolagents CodeAgent.
+        """Process a chat message using smolagents CodeAgent with rate limiting protection.
 
         Args:
             message: The user's message/question.
@@ -321,34 +368,12 @@ CRITICAL: Your response should end with final_answer() containing only the numer
         Returns:
             List of entities found in the response
         """
-        entities = []
-        response_lower = response.lower()
+        entities: list[str] = []
 
-        # Common financial entities to track
-        financial_terms = [
-            "revenue",
-            "profit",
-            "loss",
-            "debt",
-            "equity",
-            "assets",
-            "liabilities",
-            "cash",
-            "expenses",
-            "income",
-            "costs",
-            "investment",
-            "dividend",
-            "interest",
-            "tax",
-            "financial_table",
-            "balance_sheet",
-            "income_statement",
-        ]
+        # Use shared financial terms for entity extraction
+        from ..core.financial_terms import FinancialTerms
 
-        for term in financial_terms:
-            if term in response_lower:
-                entities.append(term)
+        entities.extend(FinancialTerms.extract_financial_terms(response))
 
         return entities
 
