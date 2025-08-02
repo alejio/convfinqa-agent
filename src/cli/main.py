@@ -248,14 +248,37 @@ def show_record(
 @handle_cli_errors
 def list_records(
     limit: int = typer.Option(10, "--limit", help="Number of records to display"),
+    dev_only: bool = typer.Option(
+        False, "--dev-only", help="Show only dev set records"
+    ),
+    train_only: bool = typer.Option(
+        False, "--train-only", help="Show only train set records"
+    ),
 ) -> None:
     """List available records in the dataset"""
     data_loader = create_data_loader()
-    tables = data_loader.list_available_tables()
 
-    console.print(
-        Panel(f"[bold]Available Records (showing first {limit})[/bold]", style="blue")
-    )
+    # Determine which split to show
+    split = None
+    if dev_only and train_only:
+        rich_print("[red]Error: Cannot specify both --dev-only and --train-only[/red]")
+        raise typer.Exit(1)
+    elif dev_only:
+        split = "dev"
+    elif train_only:
+        split = "train"
+
+    tables = data_loader.list_available_tables(split=split)
+
+    # Update the panel title based on split
+    if split == "dev":
+        title = f"[bold]Dev Set Records (showing first {limit})[/bold]"
+    elif split == "train":
+        title = f"[bold]Train Set Records (showing first {limit})[/bold]"
+    else:
+        title = f"[bold]Available Records (showing first {limit})[/bold]"
+
+    console.print(Panel(title, style="blue"))
 
     for i, table_id in enumerate(tables[:limit]):
         rich_print(f"{i + 1:3d}. {table_id}")
@@ -263,7 +286,8 @@ def list_records(
     if len(tables) > limit:
         rich_print(f"... and {len(tables) - limit} more records")
 
-    rich_print(f"\n[bold]Total records: {len(tables)}[/bold]")
+    split_info = f" ({split} set)" if split else ""
+    rich_print(f"\n[bold]Total records{split_info}: {len(tables)}[/bold]")
 
 
 @app.command()

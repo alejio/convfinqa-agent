@@ -196,13 +196,23 @@ class DataLoader:
                 details={"error_type": type(e).__name__},
             ) from e
 
-    def list_available_tables(self) -> list[str]:
-        """List all available tables in the dataset."""
+    def list_available_tables(self, split: str | None = None) -> list[str]:
+        """List all available tables in the dataset.
+
+        Args:
+            split: Optional split to filter by ('train', 'dev', or None for all)
+        """
         if self.dataset is None:
             self.load_dataset()
 
         assert self.dataset is not None  # For type checker
-        return [record.id for record in self.dataset.get_all_records()]
+
+        if split == "dev":
+            return [record.id for record in self.dataset.dev]
+        elif split == "train":
+            return [record.id for record in self.dataset.train]
+        else:
+            return [record.id for record in self.dataset.get_all_records()]
 
     def get_dataset_statistics(self) -> dict[str, Any]:
         """Get basic statistics about the dataset."""
