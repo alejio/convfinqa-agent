@@ -247,10 +247,15 @@ class ConvFinQAAgent:
         """
         entities: list[str] = []
 
-        # Use shared financial terms for entity extraction
-        from ..core.financial_terms import FinancialTerms
+        # Use DSPy-powered entity extraction
+        from ..core.financial_terms import get_financial_terms_instance
 
-        entities.extend(FinancialTerms.extract_financial_terms(response))
+        terms_instance = get_financial_terms_instance()
+        conversation_context = getattr(self, "conversation_context", "")
+        extracted_entities = terms_instance.extract_entities(
+            response, conversation_context
+        )
+        entities.extend(extracted_entities)
 
         return entities
 
