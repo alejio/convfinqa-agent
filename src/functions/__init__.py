@@ -1,4 +1,4 @@
-"""ConvFinQA agent and tool functions with PEC+DSPy architecture."""
+"""ConvFinQA agent and tool functions with token-optimized architecture."""
 
 from .agent import ConvFinQAAgent
 from .math import (

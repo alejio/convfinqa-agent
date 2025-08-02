@@ -79,17 +79,13 @@ def with_rate_limiting(max_retries: int = 5, base_delay: float = 1.0) -> Any:
 class ConvFinQAAgent:
     """LLM agent for conversational financial question answering using smolagents."""
 
-    def __init__(
-        self, model: str = "gpt-4o-mini", token_optimized: bool = False
-    ) -> None:
-        """Initialize the smolagents-based agent.
+    def __init__(self, model: str = "gpt-4o-mini") -> None:
+        """Initialize the smolagents-based agent with token optimization.
 
         Args:
             model: The model to use for the agent. Defaults to "gpt-4o-mini".
-            token_optimized: Enable token optimization mode for reduced token usage.
         """
         self.model = model
-        self.token_optimized = token_optimized
         self.tools = [
             list_tables,
             show_table,
@@ -228,154 +224,17 @@ class ConvFinQAAgent:
         # Get recent conversation turns for context
         recent_turns = self.conversation_manager.current_state.turns[-3:]
 
-        # Use token-optimized prompts if enabled
-        if self.token_optimized:
-            # Build concise context
-            context_parts = []
-            for i, turn in enumerate(recent_turns, 1):
-                context_parts.append(f"Q{i}: {turn.user_message}")
-                context_parts.append(f"A{i}: {turn.assistant_response}")
-            context_str = " | ".join(context_parts)
-            return build_dspy_prompt(message, context_str)
-
-        # Original verbose prompts for backward compatibility
-        context_parts = ["CONVERSATION CONTEXT:"]
+        # Always use token-optimized DSPy prompts
+        context_parts = []
         for i, turn in enumerate(recent_turns, 1):
-            context_parts.append(f"Previous Q{i}: {turn.user_message}")
-            context_parts.append(f"Previous A{i}: {turn.assistant_response}")
-
-        context_str = "\n".join(context_parts)
-
-        # Build contextual message with comprehensive guidance (restored)
-        contextual_message = f"""
-{context_str}
-
-CURRENT QUESTION: {message}
-
-CRITICAL CONTEXT ANALYSIS:
-- If the current question contains words like "it", "that", "the same", "also", "and what was", "in the previous year", etc., these refer to topics or values from the conversation above.
-- Use the previous questions and answers to understand what these pronouns and references mean.
-- Maintain consistency with previous calculations and data.
-- If asking about a different year or time period of the same metric, use the same table rows/columns but different time periods.
-
-SYSTEMATIC ANALYSIS APPROACH:
-1. UNDERSTAND THE QUESTION:
-   - Identify what financial metric is being asked for
-   - Determine if it's a lookup, calculation, comparison, or change analysis
-   - Note any time periods, specific items, or conditions mentioned
-
-2. DATA EXPLORATION STRATEGY:
-   - Start with show_table() to see all available data if unfamiliar with the table
-   - Use validate_data_selection() to confirm you're looking at the right rows/columns
-   - Use get_table_value() for precise single-cell extractions with SPECIFIC FINANCIAL TERMINOLOGY
-
-3. CALCULATION METHODOLOGY:
-   - For simple lookups: Use get_table_value() with specific financial line item names (e.g., "senior notes", "debt issuance costs", "total revenue")
-   - For changes/differences: Use calculate_change() with "simple" mode for clean numeric results
-   - For complex calculations: Break into steps, validate each component
-   - For comparisons: Always validate you're comparing the same metrics from correct time periods
-
-4. COMMON FINANCIAL PATTERNS:
-   - Revenue questions: Look for revenue, sales, or income rows
-   - Expense questions: Look for costs, expenses, or negative values
-   - Change questions: Identify old vs new values, use calculate_change()
-   - Ratio questions: Get individual components, then divide
-   - Percentage questions: Calculate ratio, multiply by 100 if needed
-
-CRITICAL - AVOID GENERIC REFERENCES:
-❌ NEVER use vague terms like "first row", "second column", "top line", "bottom entry"
-✅ ALWAYS use specific financial terms like "senior notes", "debt issuance costs", "total revenue", "operating expenses"
-❌ NEVER say "the value in row 0" or "cell [1,2]"
-✅ ALWAYS say "the senior notes value for 2008" or "debt issuance costs for the current year"
-
-TOOL SELECTION GUIDANCE:
-- show_table(): Use when you need to see the full table structure or are unsure about data layout
-- get_table_value(): Use for extracting specific single values with precise FINANCIAL TERMINOLOGY for row/column references
-- calculate_change(): Use for any "increase", "decrease", "change" questions
-- compute(): Use for mathematical operations between extracted values
-- validate_data_selection(): Use before calculations to verify you have the right data
-- final_answer(): ALWAYS use this as your last step with just the numeric result
-
-ANSWER EXTRACTION RULES:
-- Extract only the final numeric answer, no explanations
-- Format as clean number (e.g., "60.94", "-4", "25.14")
-- For percentages, provide as decimal (e.g., "0.1083" not "10.83%") unless context clearly indicates percentage format expected
-- Remove currency symbols, commas, and units
-- For negative values, include the minus sign
-
-QUALITY CHECKS:
-- Always double-check your data sources (right financial line items, columns, time periods)
-- Verify calculations make logical sense
-- Ensure you're answering exactly what was asked
-- Use validate_data_selection() to confirm data quality before final calculations
-- Always reference financial line items by their proper names, not position
-
-REQUIRED FINAL STEP: Always end by calling final_answer() with ONLY the clean numeric result.
-"""
-        return contextual_message
+            context_parts.append(f"Q{i}: {turn.user_message}")
+            context_parts.append(f"A{i}: {turn.assistant_response}")
+        context_str = " | ".join(context_parts)
+        return build_dspy_prompt(message, context_str)
 
     def _build_initial_message(self, message: str) -> str:
-        """Build message for initial conversation turn with comprehensive guidance."""
-        # Use token-optimized prompts if enabled
-        if self.token_optimized:
-            return build_initial_dspy_prompt(message)
-
-        # Original verbose prompts for backward compatibility
-        return f"""
-CURRENT QUESTION: {message}
-
-You are a financial analysis assistant. Follow this systematic approach:
-
-STEP 1 - UNDERSTAND THE QUESTION:
-- Identify the specific financial metric being requested
-- Note any time periods, conditions, or constraints
-- Determine if this is a lookup, calculation, comparison, or trend analysis
-
-STEP 2 - EXPLORE THE DATA:
-- Use show_table() first to understand the table structure and available data
-- Identify relevant financial line items and time period columns for your analysis
-- Use validate_data_selection() to confirm data quality
-
-STEP 3 - EXTRACT DATA SYSTEMATICALLY:
-- Use get_table_value() for precise single-cell extractions
-- Always specify exact financial line item names and time period column references
-- Double-check you're getting data from correct time periods
-
-CRITICAL - USE SPECIFIC FINANCIAL TERMINOLOGY:
-❌ NEVER use vague terms like "first row", "second column", "top line", "bottom entry"
-✅ ALWAYS use specific financial terms like "senior notes", "debt issuance costs", "total revenue", "operating expenses"
-❌ NEVER say "the value in row 0" or "cell [1,2]"
-✅ ALWAYS say "the senior notes value for 2008" or "debt issuance costs for the current year"
-
-STEP 4 - PERFORM CALCULATIONS:
-- For simple lookups: Extract the value directly using proper financial terminology
-- For changes: Use calculate_change() with old_value, new_value, and "simple" mode
-- For complex calculations: Break into steps, use compute() for math operations
-- Always validate intermediate results
-
-STEP 5 - FORMAT FINAL ANSWER:
-- Use final_answer() as your last step
-- Provide ONLY the clean numeric result
-- Format: plain number (e.g., "60.94", "-4", "0.1083")
-- Remove currency symbols, commas, explanatory text
-
-TOOL USAGE PATTERNS:
-- show_table() → validate_data_selection() → get_table_value() → calculate_change()/compute() → final_answer()
-- Always end with final_answer() containing just the numeric result
-
-COMMON QUESTION TYPES:
-- "What is/was [metric] in [year]?" → Direct lookup with get_table_value() using specific financial terms
-- "How much did [metric] change?" → Use calculate_change() with old vs new values
-- "What's the difference between [A] and [B]?" → Extract both values using proper terminology, subtract
-- "Calculate [formula]" → Break into components, use compute()
-
-QUALITY CHECKS:
-- Reference financial line items by their proper names, not position
-- Verify you're using the correct time periods and financial metrics
-- Ensure calculations make logical sense for the financial context
-
-CRITICAL: Your response should end with final_answer() containing only the numeric result.
-"""
+        """Build message for initial conversation turn using token-optimized prompts."""
+        return build_initial_dspy_prompt(message)
 
     def _extract_entities_from_response(self, response: str) -> list[str]:
         """Extract financial entities mentioned in the response.
