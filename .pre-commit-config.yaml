@@ -13,13 +13,13 @@ repos:
     rev: v0.12.4
     hooks:
       # Run the linter
-      - id: ruff
-        types_or: [python, pyi, jupyter]
+      - id: ruff-check
+        types_or: [python, pyi]
         args: [--fix]
         exclude: ^tests/
       # Run the formatter
       - id: ruff-format
-        types_or: [python, pyi, jupyter]
+        types_or: [python, pyi]
         exclude: ^tests/
 
   - repo: https://github.com/pre-commit/mirrors-mypy
