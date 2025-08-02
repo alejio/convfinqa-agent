@@ -251,7 +251,7 @@ The project features **complete LLM integration and evaluation** with:
 ### Project Completion Status ✅ FINALIZED
 - **ALL MILESTONES COMPLETED** - Full ConvFinQA prototype implemented and evaluated
 - **PROJECT FINALIZED** - Development work complete, ready for submission/deployment
-- **Current Branch**: `task/improve-evaluation-and-scores-v2` - Final version with evaluation improvements
+- **Current Branch**: `task/token-optimised-refactor` - Token optimization improvements and DSPy enhancements
 - **Evaluation Results**: Achieved **45.26% execution accuracy** on dev set, matching GPT-3 DSL program baseline
 - **Comprehensive evaluation framework** with DeepEval integration and baseline comparison
 - **Chat functionality is fully operational** with real OpenAI GPT-4.1 integration
