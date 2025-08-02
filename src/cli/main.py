@@ -36,7 +36,7 @@ def chat(
     show_sessions: bool = typer.Option(
         False, "--list-sessions", help="List available sessions for this record"
     ),
-    model: str = typer.Option("gpt-4.1", "--model", help="LLM model to use"),
+    model: str = typer.Option("gpt-4o-mini", "--model", help="LLM model to use"),
 ) -> None:
     """Ask questions about a specific record with multi-turn conversation support using Smol"""
     # Initialize data loader
@@ -349,7 +349,7 @@ def evaluate(
     max_questions: int = typer.Option(
         3, "--max-questions", help="Maximum questions per record (default: 3)"
     ),
-    model: str = typer.Option("gpt-4.1", "--model", help="LLM model to use"),
+    model: str = typer.Option("gpt-4o-mini", "--model", help="LLM model to use"),
     pytest_mode: bool = typer.Option(
         False, "--pytest", help="Run pytest evaluation tests instead"
     ),
@@ -526,7 +526,7 @@ def evaluate(
 @app.command()
 @handle_cli_errors
 def agent_info(
-    model: str = typer.Option("gpt-4.1", "--model", help="Model to use"),
+    model: str = typer.Option("gpt-4o-mini", "--model", help="Model to use"),
 ) -> None:
     """Show information about the Smol agent"""
     console.print(

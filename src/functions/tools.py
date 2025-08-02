@@ -63,7 +63,7 @@ def _clean_math_expression(expression: str) -> str | None:
 
 
 @tool
-def list_tables() -> str:
+def list_tables(compact: bool = True) -> str:
     """List all available tables in the current record."""
     current_record = _get_current_record()
     if current_record is None:
@@ -73,18 +73,29 @@ def list_tables() -> str:
         table_names = current_record.get_table_names()
         financial_table = current_record.get_financial_table()
 
-        result = {
-            "tables": [
-                {
-                    "name": table_names[0] if table_names else "financial_data",
-                    "rows": financial_table.table_schema.row_count,
-                    "columns": len(financial_table.table_schema.columns),
-                    "column_names": [
-                        col.name for col in financial_table.table_schema.columns
-                    ],
-                }
-            ]
-        }
+        # Define result type before the if/else block
+        result: dict[str, Any]
+        if compact:
+            # Minimal response for token efficiency
+            result = {
+                "name": table_names[0] if table_names else "financial_data",
+                "cols": [str(col.name) for col in financial_table.table_schema.columns],
+            }
+        else:
+            # Full response
+            result = {
+                "tables": [
+                    {
+                        "name": table_names[0] if table_names else "financial_data",
+                        "rows": financial_table.table_schema.row_count,
+                        "columns": len(financial_table.table_schema.columns),
+                        "column_names": [
+                            str(col.name)
+                            for col in financial_table.table_schema.columns
+                        ],
+                    }
+                ]
+            }
 
         logger.info(f"Listed tables for record {current_record.id}")
         return json.dumps(result)
@@ -96,12 +107,13 @@ def list_tables() -> str:
 
 
 @tool
-def show_table(table_name: str = "financial_data") -> str:
+def show_table(table_name: str = "financial_data", compact: bool = True) -> str:
     """
     Show the structure and data of a specific table including document context.
 
     Args:
         table_name: Name of the table to display (optional, defaults to 'financial_data')
+        compact: Return minimal response for token efficiency (default: True)
 
     Returns:
         JSON with table schema, sample data, and document context that explains the data
@@ -120,35 +132,45 @@ def show_table(table_name: str = "financial_data") -> str:
         financial_table = current_record.get_financial_table()
         df = financial_table.to_dataframe()
 
-        # Get document context
-        doc_context = {
-            "pre_text": current_record.doc.pre_text[:500] + "..."
-            if len(current_record.doc.pre_text) > 500
-            else current_record.doc.pre_text,
-            "post_text": current_record.doc.post_text[:500] + "..."
-            if len(current_record.doc.post_text) > 500
-            else current_record.doc.post_text,
-        }
+        if compact:
+            # Minimal response for token efficiency
+            result = {
+                "cols": list(df.columns),
+                "rows": list(df.index),
+                "data": df.to_dict(orient="records"),  # type: ignore
+            }
+        else:
+            # Get document context
+            doc_context = {
+                "pre_text": current_record.doc.pre_text[:500] + "..."
+                if len(current_record.doc.pre_text) > 500
+                else current_record.doc.pre_text,
+                "post_text": current_record.doc.post_text[:500] + "..."
+                if len(current_record.doc.post_text) > 500
+                else current_record.doc.post_text,
+            }
 
-        # Return comprehensive table information with context
-        result = {
-            "table_schema": {
-                "name": financial_table.table_schema.name,
-                "rows": len(df),
-                "columns": [
-                    {
-                        "name": col.name,
-                        "type": col.column_type,
-                        "nullable": col.nullable,
-                    }
-                    for col in financial_table.table_schema.columns
-                ],
-            },
-            "document_context": doc_context,
-            "sample_data": df.to_dict(orient="records"),  # type: ignore
-            "total_rows": len(df),
-            "analysis": _table_analyzer.analyze_structure(financial_table, df).__dict__,
-        }
+            # Return comprehensive table information with context
+            result = {
+                "table_schema": {
+                    "name": financial_table.table_schema.name,
+                    "rows": len(df),
+                    "columns": [
+                        {
+                            "name": col.name,
+                            "type": col.column_type,
+                            "nullable": col.nullable,
+                        }
+                        for col in financial_table.table_schema.columns
+                    ],
+                },
+                "document_context": doc_context,
+                "sample_data": df.to_dict(orient="records"),  # type: ignore
+                "total_rows": len(df),
+                "analysis": _table_analyzer.analyze_structure(
+                    financial_table, df
+                ).__dict__,
+            }
 
         logger.info(f"Showed table {table_name} for record {current_record.id}")
         return json.dumps(result)
@@ -163,7 +185,9 @@ def show_table(table_name: str = "financial_data") -> str:
 
 
 @tool
-def query_table(query: str, table_name: str = "financial_data") -> str:
+def query_table(
+    query: str, table_name: str = "financial_data", compact: bool = True
+) -> str:
     """
     Query financial table data using enhanced DSPy-based natural language interpretation.
 
@@ -173,6 +197,7 @@ def query_table(query: str, table_name: str = "financial_data") -> str:
     Args:
         query: Natural language query about the financial data
         table_name: Name of the table to query (optional, defaults to 'financial_data')
+        compact: Return minimal response for token efficiency (default: True)
 
     Returns:
         JSON with query results, analysis strategy, and relevant financial data
@@ -212,16 +237,25 @@ def query_table(query: str, table_name: str = "financial_data") -> str:
             )
 
             # Process based on enhanced DSPy analysis
-            result = {
-                "query": query,
-                "operation": intent.operation,
-                "query_type": intent.query_type,
-                "analysis_strategy": analysis_strategy,
-                "recommended_tools": intent.parameters.get("recommended_tools", ""),
-                "confidence": intent.parameters.get("confidence", "medium"),
-                "table_structure": table_structure,
-                "document_context": doc_context,
-            }
+            result: dict[str, Any]
+            if compact:
+                result = {
+                    "op": intent.operation,
+                    "data": None,  # Will be filled below
+                }
+            else:
+                result = {
+                    "query": query,
+                    "operation": intent.operation,
+                    "query_type": intent.query_type,
+                    "analysis_strategy": analysis_strategy,
+                    "recommended_tools": str(
+                        intent.parameters.get("recommended_tools", "")
+                    ),
+                    "confidence": str(intent.parameters.get("confidence", "medium")),
+                    "table_structure": table_structure,
+                    "document_context": doc_context,
+                }
 
             # Handle different operation types with DSPy guidance
             if intent.operation == "lookup" and intent.target_columns:
@@ -231,12 +265,14 @@ def query_table(query: str, table_name: str = "financial_data") -> str:
                 ]
                 if selected_columns:
                     result["data"] = df[selected_columns].to_dict(orient="records")  # type: ignore
-                    result["selected_columns"] = selected_columns
+                    if not compact:
+                        result["selected_columns"] = selected_columns  # type: ignore
                 else:
                     result["data"] = df.to_dict(orient="records")  # type: ignore
-                    result["suggestion"] = (
-                        f"Columns {intent.target_columns} not found. Showing all data."
-                    )
+                    if not compact:
+                        result["suggestion"] = (
+                            f"Columns {intent.target_columns} not found. Showing all data."
+                        )
 
             elif intent.operation == "aggregate" and intent.target_columns:
                 # Aggregation operation - find numeric columns
@@ -254,24 +290,31 @@ def query_table(query: str, table_name: str = "financial_data") -> str:
                         except Exception:
                             continue
 
-                    result["data"] = aggregated_data
-                    result["operation_details"] = (
-                        f"Aggregated {len(target_numeric)} numeric columns"
-                    )
+                    result["data"] = aggregated_data  # type: ignore
+                    if not compact:
+                        result["operation_details"] = (
+                            f"Aggregated {len(target_numeric)} numeric columns"
+                        )
                 else:
                     result["data"] = {
                         "error": "No numeric columns found for aggregation"
-                    }
-                    result["suggestion"] = f"Available numeric columns: {numeric_cols}"
+                    }  # type: ignore
+                    if not compact:
+                        result["suggestion"] = (
+                            f"Available numeric columns: {numeric_cols}"
+                        )
 
             elif intent.operation in ["calculate", "analyze_change", "compare"]:
                 # Complex operations - provide guidance for next steps
-                result["data"] = {
-                    "status": "analysis_required",
-                    "message": "Complex operation detected. Use the analysis strategy below.",
-                    "next_steps": analysis_strategy,
-                    "available_data": df.head(5).to_dict(orient="records"),  # type: ignore
-                }
+                if compact:
+                    result["data"] = df.head(5).to_dict(orient="records")  # type: ignore
+                else:
+                    result["data"] = {
+                        "status": "analysis_required",
+                        "message": "Complex operation detected. Use the analysis strategy below.",
+                        "next_steps": analysis_strategy,
+                        "available_data": df.head(5).to_dict(orient="records"),  # type: ignore
+                    }
 
             else:
                 # Default: show relevant data based on columns
@@ -291,16 +334,24 @@ def query_table(query: str, table_name: str = "financial_data") -> str:
         except Exception as e:
             logger.debug(f"Enhanced DSPy parsing failed: {e}")
             # Fallback to basic processing
-            return json.dumps(
-                {
-                    "query": query,
-                    "result_type": "basic_fallback",
-                    "data": df.to_dict(orient="records"),  # type: ignore
-                    "table_structure": table_structure,
-                    "document_context": doc_context,
-                    "error": f"Enhanced analysis failed: {str(e)}",
-                }
-            )
+            if compact:
+                return json.dumps(
+                    {
+                        "data": df.to_dict(orient="records"),  # type: ignore
+                        "error": f"Enhanced analysis failed: {str(e)}",
+                    }
+                )
+            else:
+                return json.dumps(
+                    {
+                        "query": query,
+                        "result_type": "basic_fallback",
+                        "data": df.to_dict(orient="records"),  # type: ignore
+                        "table_structure": table_structure,
+                        "document_context": doc_context,
+                        "error": f"Enhanced analysis failed: {str(e)}",
+                    }
+                )
 
     except Exception as e:
         error_msg = f"Error querying table: {str(e)}"

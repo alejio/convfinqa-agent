@@ -22,7 +22,7 @@ class TestConvFinQAAgent:
 
         agent = ConvFinQAAgent()
 
-        assert agent.model == "gpt-4.1"
+        assert agent.model == "gpt-4o-mini"
         assert agent.tools is not None
         assert agent.agent is not None
         assert agent.conversation_history == []

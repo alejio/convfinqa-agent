@@ -78,11 +78,11 @@ def with_rate_limiting(max_retries: int = 5, base_delay: float = 1.0) -> Any:
 class ConvFinQAAgent:
     """LLM agent for conversational financial question answering using smolagents."""
 
-    def __init__(self, model: str = "gpt-4.1") -> None:
+    def __init__(self, model: str = "gpt-4o-mini") -> None:
         """Initialize the smolagents-based agent.
 
         Args:
-            model: The model to use for the agent. Defaults to "gpt-4.1".
+            model: The model to use for the agent. Defaults to "gpt-4o-mini".
         """
         self.model = model
         self.tools = [
