@@ -31,3 +31,5 @@ uv.lock
 .convfinqa_sessions/*
 
 dataset.md
+
+.checkpoints/

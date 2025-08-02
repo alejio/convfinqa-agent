@@ -118,6 +118,7 @@ def _evaluate_single_record(
     model: str,
     max_questions_per_record: int | None = None,
     add_delay: bool = True,
+    token_optimized: bool = False,
 ) -> list[dict[str, Any]]:
     """Evaluate a single record with its own agent instance.
 
@@ -130,6 +131,7 @@ def _evaluate_single_record(
         model: The model name to use
         max_questions_per_record: Maximum questions per record (None = all questions)
         add_delay: Whether to add small delays to reduce rate limiting
+        token_optimized: Whether to enable token optimization for reduced usage
 
     Returns:
         List of result dictionaries for this record
@@ -146,7 +148,7 @@ def _evaluate_single_record(
         time.sleep(initial_delay)
 
     # Create a separate agent instance for this record (thread-safe)
-    agent = ConvFinQAAgent(model=model)
+    agent = ConvFinQAAgent(model=model, token_optimized=token_optimized)
 
     # Set record context for agent and start fresh conversation
     agent.set_record_context(record, data_loader)
@@ -228,6 +230,7 @@ def evaluate_agent_on_dataset(
     max_workers: int | None = None,
     checkpoint_file: str | None = None,
     resume: bool = False,
+    token_optimized: bool = False,
 ) -> "ConvFinQAEvaluationResults":
     """Evaluate agent on dataset with ConvFinQA baseline comparison format.
 
@@ -240,6 +243,7 @@ def evaluate_agent_on_dataset(
         max_workers: Maximum number of worker threads for parallel processing (default: 4, max 8 for OpenAI rate limits)
         checkpoint_file: Path to checkpoint file for saving/resuming progress
         resume: Whether to resume from checkpoint if available
+        token_optimized: Whether to enable token optimization for reduced usage
 
     Returns:
         ConvFinQAEvaluationResults with comprehensive metrics
@@ -362,6 +366,7 @@ def evaluate_agent_on_dataset(
                         agent.model,  # Use agent's model name
                         max_questions_per_record,
                         True,  # add_delay=True for parallel processing
+                        token_optimized,  # pass token_optimized flag
                     ): record
                     for record in records_to_evaluate
                 }
@@ -436,6 +441,7 @@ def evaluate_agent_on_dataset(
                         agent.model,
                         max_questions_per_record,
                         False,  # add_delay=False for sequential
+                        token_optimized,  # pass token_optimized flag
                     )
 
                     # Add all results from this record

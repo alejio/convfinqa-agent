@@ -469,6 +469,7 @@ def evaluate(
             max_workers=max_workers,
             checkpoint_file=checkpoint_path,
             resume=resume,
+            token_optimized=token_optimized,
         )
 
         # Print results in baseline comparison format

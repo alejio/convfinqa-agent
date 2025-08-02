@@ -1,8 +1,10 @@
 {
     "version": "0.2.0",
     "configurations": [
+
+
       {
-        "name": "Python: Debug test_conversation.py with pytest",
+        "name": "Python: Debug tests with pytest",
         "type": "debugpy",
         "request": "launch",
         "module": "pytest",
@@ -12,5 +14,21 @@
         "justMyCode": false,
         "console": "integratedTerminal"
       }
+    ,
+    {
+      "name": "Python: Debug CLI evaluate command",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "src.cli.main",
+      "args": [
+        "evaluate",
+        "--no-checkpoint",
+        "--token-optimized",
+        "--max-records",
+        "1"
+      ],
+      "justMyCode": false,
+      "console": "integratedTerminal"
+    }
     ]
   }
