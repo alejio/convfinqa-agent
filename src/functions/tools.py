@@ -63,8 +63,12 @@ def _clean_math_expression(expression: str) -> str | None:
 
 
 @tool
-def list_tables(compact: bool = True) -> str:
-    """List all available tables in the current record."""
+def list_tables(compact: bool = False) -> str:
+    """List all available tables in the current record.
+
+    Args:
+        compact: Return minimal response for token efficiency (default: False)
+    """
     current_record = _get_current_record()
     if current_record is None:
         return json.dumps({"error": "No record context set"})
@@ -107,13 +111,13 @@ def list_tables(compact: bool = True) -> str:
 
 
 @tool
-def show_table(table_name: str = "financial_data", compact: bool = True) -> str:
+def show_table(table_name: str = "financial_data", compact: bool = False) -> str:
     """
     Show the structure and data of a specific table including document context.
 
     Args:
         table_name: Name of the table to display (optional, defaults to 'financial_data')
-        compact: Return minimal response for token efficiency (default: True)
+        compact: Return minimal response for token efficiency (default: False)
 
     Returns:
         JSON with table schema, sample data, and document context that explains the data
@@ -186,10 +190,9 @@ def show_table(table_name: str = "financial_data", compact: bool = True) -> str:
 
 @tool
 def query_table(
-    query: str, table_name: str = "financial_data", compact: bool = True
+    query: str, table_name: str = "financial_data", compact: bool = False
 ) -> str:
-    """
-    Query financial table data using enhanced DSPy-based natural language interpretation.
+    """Query financial table data using enhanced DSPy-based natural language interpretation.
 
     This tool uses advanced DSPy analysis to understand financial queries and recommend
     the best analysis strategy for accurate results.
@@ -197,7 +200,7 @@ def query_table(
     Args:
         query: Natural language query about the financial data
         table_name: Name of the table to query (optional, defaults to 'financial_data')
-        compact: Return minimal response for token efficiency (default: True)
+        compact: Return minimal response for token efficiency (default: False)
 
     Returns:
         JSON with query results, analysis strategy, and relevant financial data
