@@ -361,8 +361,19 @@ def evaluate(
         "--max-workers",
         help="Maximum number of worker threads for parallel processing (default: 4, max recommended: 8)",
     ),
+    checkpoint_file: str = typer.Option(
+        ".checkpoints/evaluation_checkpoint.json",
+        "--checkpoint",
+        help="Path to checkpoint file for saving/resuming progress",
+    ),
+    resume: bool = typer.Option(
+        False, "--resume", help="Resume from checkpoint if available"
+    ),
+    no_checkpoint: bool = typer.Option(
+        False, "--no-checkpoint", help="Disable checkpoint saving/loading"
+    ),
 ) -> None:
-    """Run comprehensive evaluation with ConvFinQA baseline comparison"""
+    """Run comprehensive evaluation with ConvFinQA baseline comparison and progress tracking"""
     if pytest_mode:
         # Original pytest-based evaluation
         console.print(
@@ -439,6 +450,9 @@ def evaluate(
         console.print(
             f"[dim]Starting {'parallel' if parallel else 'sequential'} evaluation on up to {max_records} dev records...[/dim]"
         )
+        # Setup checkpoint parameters
+        checkpoint_path = None if no_checkpoint else checkpoint_file
+
         results = evaluate_agent_on_dataset(
             data_loader=data_loader,
             agent=agent,
@@ -446,6 +460,8 @@ def evaluate(
             max_questions_per_record=max_questions,
             parallel=parallel,
             max_workers=max_workers,
+            checkpoint_file=checkpoint_path,
+            resume=resume,
         )
 
         # Print results in baseline comparison format

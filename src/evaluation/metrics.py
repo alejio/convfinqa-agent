@@ -2,6 +2,8 @@
 Custom evaluation metrics for ConvFinQA using DeepEval's proper G-Eval pattern.
 """
 
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from deepeval.metrics.base_metric import BaseMetric
@@ -11,10 +13,21 @@ from deepeval.metrics.conversational_g_eval.conversational_g_eval import (
 from deepeval.metrics.g_eval.g_eval import GEval
 from deepeval.test_case.conversational_test_case import TurnParams
 from deepeval.test_case.llm_test_case import LLMTestCase, LLMTestCaseParams
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 from ..core.logger import get_logger
 
 logger = get_logger(__name__)
+console = Console()
 
 if TYPE_CHECKING:
     from ..data.loader import DataLoader
@@ -213,6 +226,8 @@ def evaluate_agent_on_dataset(
     max_questions_per_record: int | None = None,
     parallel: bool = False,
     max_workers: int | None = None,
+    checkpoint_file: str | None = None,
+    resume: bool = False,
 ) -> "ConvFinQAEvaluationResults":
     """Evaluate agent on dataset with ConvFinQA baseline comparison format.
 
@@ -223,18 +238,92 @@ def evaluate_agent_on_dataset(
         max_questions_per_record: Maximum questions per record (None = all questions)
         parallel: Whether to process records in parallel (default: False)
         max_workers: Maximum number of worker threads for parallel processing (default: 4, max 8 for OpenAI rate limits)
+        checkpoint_file: Path to checkpoint file for saving/resuming progress
+        resume: Whether to resume from checkpoint if available
 
     Returns:
         ConvFinQAEvaluationResults with comprehensive metrics
     """
     results = ConvFinQAEvaluationResults()
 
+    # Setup checkpoint handling
+    checkpoint_path = None
+    if checkpoint_file:
+        checkpoint_path = Path(checkpoint_file)
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Try to resume from checkpoint
+    processed_record_ids = set()
+    if resume and checkpoint_path and checkpoint_path.exists():
+        try:
+            with open(checkpoint_path) as f:
+                checkpoint_data = json.load(f)
+
+            # Restore previous results
+            for result_data in checkpoint_data.get("results", []):
+                results.add_result(**result_data)
+
+            processed_record_ids = set(checkpoint_data.get("processed_record_ids", []))
+
+            console.print(
+                f"[green]Resumed from checkpoint: {len(processed_record_ids)} records already processed[/green]"
+            )
+        except Exception as e:
+            console.print(
+                f"[yellow]Failed to load checkpoint: {e}. Starting fresh.[/yellow]"
+            )
+            processed_record_ids = set()
+
     # Use dev split for evaluation (matches paper methodology)
     if data_loader.dataset is None:
         raise ValueError("Dataset not loaded")
-    records_to_evaluate = data_loader.dataset.dev
+    all_records = data_loader.dataset.dev
     if max_records:
-        records_to_evaluate = records_to_evaluate[:max_records]
+        all_records = all_records[:max_records]
+
+    # Filter out already processed records if resuming
+    records_to_evaluate = [
+        record for record in all_records if record.id not in processed_record_ids
+    ]
+
+    if not records_to_evaluate:
+        console.print(
+            "[green]All records already processed! Loading final results...[/green]"
+        )
+        return results
+
+    def save_checkpoint() -> None:
+        """Save current progress to checkpoint file."""
+        if checkpoint_path:
+            try:
+                checkpoint_data = {
+                    "processed_record_ids": list(processed_record_ids),
+                    "results": [
+                        {
+                            "record_id": r["record_id"],
+                            "turn": r["turn"],
+                            "question": r["question"],
+                            "expected": r["expected"],
+                            "actual": r["actual"],
+                            "is_correct": r["is_correct"],
+                            "is_hybrid_conversation": r["is_hybrid"],
+                        }
+                        for r in results.detailed_results
+                    ],
+                    "total_records": len(all_records),
+                    "max_records": max_records,
+                    "max_questions_per_record": max_questions_per_record,
+                }
+
+                with open(checkpoint_path, "w") as f:
+                    json.dump(checkpoint_data, f, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint: {e}")
+
+    total_to_process = len(records_to_evaluate)
+    console.print(
+        f"[dim]Processing {total_to_process} records ({len(processed_record_ids)} already completed)...[/dim]"
+    )
 
     if parallel:
         # Parallel evaluation using ThreadPoolExecutor with OpenAI rate limit considerations
@@ -249,24 +338,106 @@ def evaluate_agent_on_dataset(
                 f"max_workers={max_workers} may cause rate limiting, consider ≤8"
             )
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all records for parallel processing
-            future_to_record = {
-                executor.submit(
-                    _evaluate_single_record,
-                    record,
-                    data_loader,
-                    agent.model,  # Use agent's model name
-                    max_questions_per_record,
-                    True,  # add_delay=True for parallel processing
-                ): record
-                for record in records_to_evaluate
-            }
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("[cyan]({task.fields[current_acc]:.1f}% acc)[/cyan]"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                "Evaluating records...", total=total_to_process, current_acc=0.0
+            )
 
-            # Collect results as they complete
-            for future in concurrent.futures.as_completed(future_to_record):
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all records for parallel processing
+                future_to_record = {
+                    executor.submit(
+                        _evaluate_single_record,
+                        record,
+                        data_loader,
+                        agent.model,  # Use agent's model name
+                        max_questions_per_record,
+                        True,  # add_delay=True for parallel processing
+                    ): record
+                    for record in records_to_evaluate
+                }
+
+                # Collect results as they complete
+                completed_count = 0
+                for future in concurrent.futures.as_completed(future_to_record):
+                    try:
+                        record = future_to_record[future]
+                        record_results = future.result()
+
+                        # Add all results from this record
+                        for result in record_results:
+                            results.add_result(
+                                record_id=result["record_id"],
+                                turn=result["turn"],
+                                question=result["question"],
+                                expected=result["expected"],
+                                actual=result["actual"],
+                                is_correct=result["is_correct"],
+                                is_hybrid_conversation=result["is_hybrid_conversation"],
+                            )
+
+                        # Mark record as processed and save checkpoint
+                        processed_record_ids.add(record.id)
+                        save_checkpoint()
+
+                        completed_count += 1
+                        current_acc = (
+                            results.execution_accuracy
+                            if results.total_questions > 0
+                            else 0.0
+                        )
+                        progress.update(
+                            task,
+                            advance=1,
+                            current_acc=current_acc,
+                            description=f"Evaluating records... (Record {record.id[:8]}...)",
+                        )
+
+                    except Exception as e:
+                        # Handle any unexpected errors
+                        record = future_to_record[future]
+                        logger.error(f"Record {record.id} generated an exception: {e}")
+                        processed_record_ids.add(
+                            record.id
+                        )  # Mark as processed even if failed
+                        save_checkpoint()
+                        completed_count += 1
+                        progress.update(task, advance=1)
+    else:
+        # Sequential evaluation with progress bar
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TextColumn("[cyan]({task.fields[current_acc]:.1f}% acc)[/cyan]"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            console=console,
+        ) as progress:
+            task = progress.add_task(
+                "Evaluating records...", total=total_to_process, current_acc=0.0
+            )
+
+            for record in records_to_evaluate:
                 try:
-                    record_results = future.result()
+                    record_results = _evaluate_single_record(
+                        record,
+                        data_loader,
+                        agent.model,
+                        max_questions_per_record,
+                        False,  # add_delay=False for sequential
+                    )
+
                     # Add all results from this record
                     for result in record_results:
                         results.add_result(
@@ -278,35 +449,45 @@ def evaluate_agent_on_dataset(
                             is_correct=result["is_correct"],
                             is_hybrid_conversation=result["is_hybrid_conversation"],
                         )
-                except Exception as e:
-                    # Handle any unexpected errors
-                    record = future_to_record[future]
-                    logger.error(f"Record {record.id} generated an exception: {e}")
-    else:
-        # Sequential evaluation - use the same logic as parallel but without threading
-        for record in records_to_evaluate:
-            try:
-                record_results = _evaluate_single_record(
-                    record,
-                    data_loader,
-                    agent.model,
-                    max_questions_per_record,
-                    False,  # add_delay=False for sequential
-                )
-                # Add all results from this record
-                for result in record_results:
-                    results.add_result(
-                        record_id=result["record_id"],
-                        turn=result["turn"],
-                        question=result["question"],
-                        expected=result["expected"],
-                        actual=result["actual"],
-                        is_correct=result["is_correct"],
-                        is_hybrid_conversation=result["is_hybrid_conversation"],
+
+                    # Mark record as processed and save checkpoint
+                    processed_record_ids.add(record.id)
+                    save_checkpoint()
+
+                    current_acc = (
+                        results.execution_accuracy
+                        if results.total_questions > 0
+                        else 0.0
                     )
-            except Exception as e:
-                # Handle any unexpected errors at record level
-                logger.error(f"Record {record.id} generated an exception: {e}")
+                    progress.update(
+                        task,
+                        advance=1,
+                        current_acc=current_acc,
+                        description=f"Evaluating records... (Record {record.id[:8]}...)",
+                    )
+
+                except KeyboardInterrupt:
+                    console.print(
+                        "\n[yellow]Evaluation interrupted. Progress saved to checkpoint.[/yellow]"
+                    )
+                    save_checkpoint()
+                    raise
+                except Exception as e:
+                    # Handle any unexpected errors at record level
+                    logger.error(f"Record {record.id} generated an exception: {e}")
+                    processed_record_ids.add(
+                        record.id
+                    )  # Mark as processed even if failed
+                    save_checkpoint()
+                    progress.update(task, advance=1)
+
+    # Clean up checkpoint file if all records completed successfully
+    if checkpoint_path and len(processed_record_ids) == len(all_records):
+        try:
+            checkpoint_path.unlink()
+            console.print("[dim]Checkpoint file removed (evaluation complete)[/dim]")
+        except Exception:
+            pass  # Don't worry if cleanup fails
 
     return results
 
