@@ -37,6 +37,9 @@ def chat(
         False, "--list-sessions", help="List available sessions for this record"
     ),
     model: str = typer.Option("gpt-4o-mini", "--model", help="LLM model to use"),
+    token_optimized: bool = typer.Option(
+        False, "--token-optimized", help="Enable token optimization for reduced usage"
+    ),
 ) -> None:
     """Ask questions about a specific record with multi-turn conversation support using Smol"""
     # Initialize data loader
@@ -46,7 +49,7 @@ def chat(
     record = data_loader.get_record(record_id)
 
     # Initialize LLM agent with Smol
-    agent = ConvFinQAAgent(model=model)
+    agent = ConvFinQAAgent(model=model, token_optimized=token_optimized)
 
     # Handle session listing
     if show_sessions:

@@ -15,6 +15,7 @@ from ..core.conversation import ConversationManager
 from ..core.logger import get_logger
 from ..core.models import Record
 from ..data.loader import DataLoader
+from .dspy_signatures import build_dspy_prompt, build_initial_dspy_prompt
 from .tools import (
     calculate_change,
     compute,
@@ -225,11 +226,19 @@ class ConvFinQAAgent:
             return self._build_initial_message(message)
 
         # Get recent conversation turns for context
-        recent_turns = self.conversation_manager.current_state.turns[
-            -3:
-        ]  # Back to 3 turns for better context
+        recent_turns = self.conversation_manager.current_state.turns[-3:]
 
-        # Build specific context about what was discussed
+        # Use token-optimized prompts if enabled
+        if self.token_optimized:
+            # Build concise context
+            context_parts = []
+            for i, turn in enumerate(recent_turns, 1):
+                context_parts.append(f"Q{i}: {turn.user_message}")
+                context_parts.append(f"A{i}: {turn.assistant_response}")
+            context_str = " | ".join(context_parts)
+            return build_dspy_prompt(message, context_str)
+
+        # Original verbose prompts for backward compatibility
         context_parts = ["CONVERSATION CONTEXT:"]
         for i, turn in enumerate(recent_turns, 1):
             context_parts.append(f"Previous Q{i}: {turn.user_message}")
@@ -307,6 +316,11 @@ REQUIRED FINAL STEP: Always end by calling final_answer() with ONLY the clean nu
 
     def _build_initial_message(self, message: str) -> str:
         """Build message for initial conversation turn with comprehensive guidance."""
+        # Use token-optimized prompts if enabled
+        if self.token_optimized:
+            return build_initial_dspy_prompt(message)
+
+        # Original verbose prompts for backward compatibility
         return f"""
 CURRENT QUESTION: {message}
 
