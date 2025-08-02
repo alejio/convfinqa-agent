@@ -353,6 +353,9 @@ def evaluate(
         3, "--max-questions", help="Maximum questions per record (default: 3)"
     ),
     model: str = typer.Option("gpt-4o-mini", "--model", help="LLM model to use"),
+    token_optimized: bool = typer.Option(
+        False, "--token-optimized", help="Enable token optimization for reduced usage"
+    ),
     pytest_mode: bool = typer.Option(
         False, "--pytest", help="Run pytest evaluation tests instead"
     ),
@@ -423,6 +426,7 @@ def evaluate(
         Panel(
             f"[bold]ConvFinQA Baseline Comparison Evaluation[/bold]\n"
             f"Model: {model}\n"
+            f"Token Optimized: {'✅ Enabled' if token_optimized else '❌ Disabled'}\n"
             f"Max Records: {max_records} (from dev split)\n"
             f"Max Questions/Record: {max_questions}\n"
             f"Evaluation Method: Execution Accuracy (Exe Acc)\n"
@@ -447,7 +451,7 @@ def evaluate(
         console.print("[dim]Initializing data loader and agent...[/dim]")
         data_loader = create_data_loader()
         data_loader.load_dataset()  # Load the dataset explicitly
-        agent = ConvFinQAAgent(model=model)
+        agent = ConvFinQAAgent(model=model, token_optimized=token_optimized)
 
         # Run evaluation with parallelism options
         console.print(
