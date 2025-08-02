@@ -37,9 +37,6 @@ def chat(
         False, "--list-sessions", help="List available sessions for this record"
     ),
     model: str = typer.Option("gpt-4o-mini", "--model", help="LLM model to use"),
-    token_optimized: bool = typer.Option(
-        False, "--token-optimized", help="Enable token optimization for reduced usage"
-    ),
 ) -> None:
     """Ask questions about a specific record with multi-turn conversation support using Smol"""
     # Initialize data loader
@@ -49,7 +46,7 @@ def chat(
     record = data_loader.get_record(record_id)
 
     # Initialize LLM agent with Smol
-    agent = ConvFinQAAgent(model=model, token_optimized=token_optimized)
+    agent = ConvFinQAAgent(model=model)
 
     # Handle session listing
     if show_sessions:
@@ -353,9 +350,6 @@ def evaluate(
         3, "--max-questions", help="Maximum questions per record (default: 3)"
     ),
     model: str = typer.Option("gpt-4o-mini", "--model", help="LLM model to use"),
-    token_optimized: bool = typer.Option(
-        False, "--token-optimized", help="Enable token optimization for reduced usage"
-    ),
     pytest_mode: bool = typer.Option(
         False, "--pytest", help="Run pytest evaluation tests instead"
     ),
@@ -426,7 +420,7 @@ def evaluate(
         Panel(
             f"[bold]ConvFinQA Baseline Comparison Evaluation[/bold]\n"
             f"Model: {model}\n"
-            f"Token Optimized: {'✅ Enabled' if token_optimized else '❌ Disabled'}\n"
+            f"Token Optimized: ✅ Always Enabled\n"
             f"Max Records: {max_records} (from dev split)\n"
             f"Max Questions/Record: {max_questions}\n"
             f"Evaluation Method: Execution Accuracy (Exe Acc)\n"
@@ -451,7 +445,7 @@ def evaluate(
         console.print("[dim]Initializing data loader and agent...[/dim]")
         data_loader = create_data_loader()
         data_loader.load_dataset()  # Load the dataset explicitly
-        agent = ConvFinQAAgent(model=model, token_optimized=token_optimized)
+        agent = ConvFinQAAgent(model=model)
 
         # Run evaluation with parallelism options
         console.print(
@@ -469,7 +463,6 @@ def evaluate(
             max_workers=max_workers,
             checkpoint_file=checkpoint_path,
             resume=resume,
-            token_optimized=token_optimized,
         )
 
         # Print results in baseline comparison format
@@ -566,7 +559,7 @@ def agent_info(
             "• Automatic conversation memory management\n"
             "• Native OpenAI API integration via LiteLLM\n"
             "• Streamlined financial analysis workflow\n"
-            "• Reduced complexity vs previous PEC architecture\n"
+            "• Optimized token-efficient prompts for cost reduction\n"
             "• Built-in error handling and retry logic\n"
             "• Compatible with existing evaluation framework\n",
             title="✨ Smol System",

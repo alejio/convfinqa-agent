@@ -869,22 +869,18 @@ def get_table_value(
                         union_size = len(row_words.union(idx_words))
                         score: float = overlap / union_size if union_size > 0 else 0.0
 
-                        # Boost score for important financial terms
+                        # Boost score for important financial terms using DSPy
                         financial_boost: float = 0.0
-                        financial_terms = [
-                            "credit",
-                            "facility",
-                            "debt",
-                            "notes",
-                            "senior",
-                            "total",
-                            "revenue",
-                            "expense",
-                            "cost",
-                        ]
-                        for term in financial_terms:
-                            if term in row_id_lower and term in idx_text:
-                                financial_boost += 0.3
+                        from ..core.financial_terms import get_financial_terms_instance
+
+                        # Check if both contain financial terms
+                        terms_instance = get_financial_terms_instance()
+                        row_terms = terms_instance.extract_financial_terms(row_id_lower)
+                        idx_terms = terms_instance.extract_financial_terms(idx_text)
+
+                        # Boost score for matching financial terms
+                        matching_terms = row_terms.intersection(idx_terms)
+                        financial_boost = min(0.9, len(matching_terms) * 0.3)
 
                         final_score = min(1.0, score + financial_boost)
 

@@ -406,7 +406,7 @@ class EnhancedQueryParser:
             return False
 
     def classify_financial_metric(self, label: str, context: str = "") -> bool:
-        """Classify if a label represents a financial metric (compatibility method).
+        """Classify if a label represents a financial metric using DSPy.
 
         Args:
             label: Row or column label to classify
@@ -416,33 +416,12 @@ class EnhancedQueryParser:
             True if the label represents a financial metric, False otherwise
         """
         try:
-            label_lower = str(label).lower()
-
-            # Common financial terms
-            financial_words = [
-                "revenue",
-                "sales",
-                "income",
-                "profit",
-                "loss",
-                "expense",
-                "cost",
-                "asset",
-                "liability",
-                "equity",
-                "cash",
-                "debt",
-                "margin",
-                "ebitda",
-                "earnings",
-                "dividend",
-                "interest",
-                "tax",
-                "capital",
-                "investment",
-            ]
-
-            return any(word in label_lower for word in financial_words)
-
+            # Use DSPy classifier
+            classifier = dspy.Predict(FinancialMetricClassifier)
+            result = classifier(label=label, context=context)
+            return str(result.is_financial_metric).lower() == "true"
         except Exception:
-            return False
+            # Fallback to basic check
+            from ..core.financial_terms import get_financial_terms_instance
+
+            return get_financial_terms_instance().is_financial_term(label, context)

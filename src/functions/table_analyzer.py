@@ -131,10 +131,10 @@ class TableStructureAnalyzer:
 
     def _fallback_metric_check(self, label: str) -> bool:
         """Pattern-based fallback for financial metric identification."""
-        # Use shared financial terms for recognition
-        from ..core.financial_terms import FinancialTerms
+        # Use DSPy-powered financial terms recognition
+        from ..core.financial_terms import get_financial_terms_instance
 
-        return FinancialTerms.has_financial_content(label)
+        return get_financial_terms_instance().has_financial_content(label)
 
     def _determine_primary_structure(
         self, time_columns: list[str], metric_rows: list[str], shape: tuple[int, int]

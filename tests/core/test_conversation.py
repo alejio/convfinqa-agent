@@ -88,8 +88,14 @@ class TestConversationManager:
         assert "What is the revenue?" in context
         assert "What about profit?" in context
 
-    def test_entity_extraction(self, conversation_manager):
+    def test_entity_extraction(self, conversation_manager, mocker):
         """Test entity extraction from response."""
+        # Mock the DSPy entity extraction to return expected entities
+        mock_instance = mocker.patch("src.core.financial_terms.get_financial_terms_instance")
+        mock_extractor = mocker.MagicMock()
+        mock_extractor.extract_entities.return_value = ["revenue", "profit", "Q1", "2023"]
+        mock_instance.return_value = mock_extractor
+
         entities = conversation_manager.extract_entities_from_response(
             "The revenue in Q1 2023 was $100M, showing strong profit margins."
         )

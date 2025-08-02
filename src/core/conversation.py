@@ -121,10 +121,15 @@ class ConversationManager:
         """
         entities: list[str] = []
 
-        # Use shared financial terms for entity extraction
-        from .financial_terms import FinancialTerms
+        # Use DSPy-powered entity extraction
+        from .financial_terms import get_financial_terms_instance
 
-        entities.extend(FinancialTerms.extract_financial_terms(response))
+        terms_instance = get_financial_terms_instance()
+        conversation_context = self.get_conversation_context()
+        extracted_entities = terms_instance.extract_entities(
+            response, conversation_context
+        )
+        entities.extend(extracted_entities)
 
         # Look for table references
         response_lower = response.lower()
