@@ -123,6 +123,80 @@ class FinancialMetricClassifier(dspy.Signature):
     confidence = dspy.OutputField(desc="Confidence level: high, medium, or low")
 
 
+class SmartRowColumnMatcher(dspy.Signature):
+    """Intelligently match user queries to specific table rows and columns."""
+
+    target_description = dspy.InputField(
+        desc="Description of what the user is looking for (e.g., 'senior notes', 'equipment rents payable')"
+    )
+    available_options = dspy.InputField(
+        desc="Comma-separated list of available row/column names from the table"
+    )
+    table_context = dspy.InputField(
+        desc="Information about table structure and document context"
+    )
+    search_type = dspy.InputField(desc="Whether searching for 'row' or 'column'")
+
+    best_match = dspy.OutputField(
+        desc="The best matching row/column name from available options"
+    )
+    match_confidence = dspy.OutputField(desc="Confidence level: high, medium, low")
+    reasoning = dspy.OutputField(desc="Brief explanation of why this match was chosen")
+    alternative_matches = dspy.OutputField(
+        desc="Comma-separated list of other possible matches"
+    )
+
+
+class TableStructureSignature(dspy.Signature):
+    """Analyze table structure to understand data organization."""
+
+    row_labels = dspy.InputField(desc="Comma-separated list of row labels/indices")
+    column_labels = dspy.InputField(desc="Comma-separated list of column names")
+    document_context = dspy.InputField(desc="Context from document pre/post text")
+    sample_data = dspy.InputField(
+        desc="Sample of the table data to understand patterns"
+    )
+
+    table_type = dspy.OutputField(
+        desc="Table organization: time_series, cross_sectional, mixed, or unknown"
+    )
+    primary_dimension = dspy.OutputField(
+        desc="Where main data varies: rows, columns, or both"
+    )
+    time_axis = dspy.OutputField(
+        desc="Which axis contains time periods: rows, columns, or none"
+    )
+    metric_axis = dspy.OutputField(
+        desc="Which axis contains financial metrics: rows, columns, or both"
+    )
+    extraction_strategy = dspy.OutputField(
+        desc="Recommended approach for data extraction from this table"
+    )
+
+
+class ContextualValueExtractor(dspy.Signature):
+    """Extract specific values using contextual understanding of financial questions."""
+
+    question = dspy.InputField(desc="The financial question being asked")
+    conversation_context = dspy.InputField(
+        desc="Previous conversation turns for reference resolution"
+    )
+    table_structure = dspy.InputField(desc="Analysis of table organization and layout")
+    available_data = dspy.InputField(
+        desc="Summary of available rows, columns, and data points"
+    )
+
+    target_metric = dspy.OutputField(desc="The specific financial metric to find")
+    target_timeframe = dspy.OutputField(
+        desc="The time period or context for the metric"
+    )
+    row_strategy = dspy.OutputField(desc="How to identify the correct row")
+    column_strategy = dspy.OutputField(desc="How to identify the correct column")
+    extraction_confidence = dspy.OutputField(
+        desc="Confidence in the extraction approach: high, medium, low"
+    )
+
+
 class EnhancedQueryParser:
     """Enhanced DSPy-based parser for financial table queries with intelligent tool selection."""
 
@@ -130,6 +204,11 @@ class EnhancedQueryParser:
         self.query_classifier = dspy.ChainOfThought(FinancialQueryClassifier)
         self.tool_selector = dspy.ChainOfThought(FinancialToolSelector)
         self.expression_classifier = dspy.Predict(MathExpressionClassifier)
+
+        # New DSPy components for enhanced table understanding
+        self.row_column_matcher = dspy.ChainOfThought(SmartRowColumnMatcher)
+        self.structure_analyzer = dspy.ChainOfThought(TableStructureSignature)
+        self.value_extractor = dspy.ChainOfThought(ContextualValueExtractor)
 
     def parse_with_strategy(
         self,
@@ -425,3 +504,175 @@ class EnhancedQueryParser:
             from ..core.financial_terms import get_financial_terms_instance
 
             return get_financial_terms_instance().is_financial_term(label, context)
+
+    def smart_match_row_column(
+        self,
+        target_description: str,
+        available_options: list[str],
+        table_context: str,
+        search_type: str,
+    ) -> tuple[str | None, float, str]:
+        """Use DSPy to intelligently match target descriptions to table rows/columns.
+
+        Args:
+            target_description: What the user is looking for
+            available_options: Available row/column names
+            table_context: Context about the table structure
+            search_type: "row" or "column"
+
+        Returns:
+            Tuple of (best_match, confidence_score, reasoning)
+        """
+        try:
+            if not available_options:
+                return None, 0.0, "No options available"
+
+            result = self.row_column_matcher(
+                target_description=target_description,
+                available_options=", ".join(available_options),
+                table_context=table_context,
+                search_type=search_type,
+            )
+
+            # Convert confidence to numeric score
+            confidence_map = {"high": 0.9, "medium": 0.6, "low": 0.3}
+            confidence_score = confidence_map.get(result.match_confidence.lower(), 0.3)
+
+            # Validate that the best match is actually in available options
+            best_match = result.best_match
+            if best_match not in available_options:
+                # Try to find a close match
+                best_match = self._find_closest_option(best_match, available_options)
+                if best_match:
+                    confidence_score *= 0.8  # Reduce confidence for fuzzy match
+
+            return best_match, confidence_score, result.reasoning
+
+        except Exception as e:
+            logger.debug(f"DSPy row/column matching failed: {e}")
+            # Fallback to simple string matching
+            return self._fallback_match(target_description, available_options)
+
+    def analyze_table_structure(
+        self,
+        row_labels: list[str],
+        column_labels: list[str],
+        document_context: str,
+        sample_data: str,
+    ) -> dict[str, str]:
+        """Use DSPy to analyze table structure and recommend extraction strategies.
+
+        Args:
+            row_labels: List of row names/indices
+            column_labels: List of column names
+            document_context: Context from document
+            sample_data: Sample data from the table
+
+        Returns:
+            Dictionary with structure analysis results
+        """
+        try:
+            result = self.structure_analyzer(
+                row_labels=", ".join(str(label) for label in row_labels),
+                column_labels=", ".join(str(label) for label in column_labels),
+                document_context=document_context[:500],  # Limit context length
+                sample_data=sample_data[:300],  # Limit sample data length
+            )
+
+            return {
+                "table_type": result.table_type,
+                "primary_dimension": result.primary_dimension,
+                "time_axis": result.time_axis,
+                "metric_axis": result.metric_axis,
+                "extraction_strategy": result.extraction_strategy,
+            }
+
+        except Exception as e:
+            logger.debug(f"DSPy table structure analysis failed: {e}")
+            return {
+                "table_type": "unknown",
+                "primary_dimension": "unknown",
+                "time_axis": "unknown",
+                "metric_axis": "unknown",
+                "extraction_strategy": "Use semantic matching for row/column identification",
+            }
+
+    def extract_value_context(
+        self,
+        question: str,
+        conversation_context: str,
+        table_structure: dict[str, str],
+        available_data: str,
+    ) -> dict[str, str]:
+        """Use DSPy to understand what value to extract from the question context.
+
+        Args:
+            question: The current financial question
+            conversation_context: Previous conversation turns
+            table_structure: Results from table structure analysis
+            available_data: Summary of available data
+
+        Returns:
+            Dictionary with extraction guidance
+        """
+        try:
+            result = self.value_extractor(
+                question=question,
+                conversation_context=conversation_context[-500:],  # Limit context
+                table_structure=str(table_structure),
+                available_data=available_data[:400],  # Limit data summary
+            )
+
+            return {
+                "target_metric": result.target_metric,
+                "target_timeframe": result.target_timeframe,
+                "row_strategy": result.row_strategy,
+                "column_strategy": result.column_strategy,
+                "confidence": result.extraction_confidence,
+            }
+
+        except Exception as e:
+            logger.debug(f"DSPy value extraction guidance failed: {e}")
+            return {
+                "target_metric": question,
+                "target_timeframe": "unknown",
+                "row_strategy": "semantic matching",
+                "column_strategy": "semantic matching",
+                "confidence": "low",
+            }
+
+    def _find_closest_option(self, target: str, options: list[str]) -> str | None:
+        """Find the closest matching option using string similarity."""
+        if not target or not options:
+            return None
+
+        target_lower = target.lower()
+        best_match = None
+        best_score = 0.0
+
+        for option in options:
+            option_lower = str(option).lower()
+
+            # Exact match
+            if target_lower == option_lower:
+                return option
+
+            # Substring match
+            if target_lower in option_lower or option_lower in target_lower:
+                score = min(len(target_lower), len(option_lower)) / max(
+                    len(target_lower), len(option_lower)
+                )
+                if score > best_score:
+                    best_score = score
+                    best_match = option
+
+        return best_match if best_score > 0.3 else None
+
+    def _fallback_match(
+        self, target: str, options: list[str]
+    ) -> tuple[str | None, float, str]:
+        """Fallback matching when DSPy fails."""
+        best_match = self._find_closest_option(target, options)
+        if best_match:
+            return best_match, 0.5, "Fallback string matching"
+        return None, 0.0, "No suitable match found"

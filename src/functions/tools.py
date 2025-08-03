@@ -827,7 +827,7 @@ def get_table_value(
         if matching_col is None:
             return f"ERROR: Column '{column_identifier}' not found. Available columns: {[str(col) for col in available_cols]}"
 
-        # Enhanced fuzzy row matching with better error handling
+        # Enhanced DSPy-powered row matching
         matching_row_idx = None
         best_match_score: float = 0.0
         available_rows = []
@@ -838,105 +838,79 @@ def get_table_value(
             logger.debug(f"Error getting row indices: {e}")
             available_rows = [f"row_{i}" for i in range(len(df))]
 
-        # First try exact index match
-        for idx in df.index:
-            try:
-                idx_text = str(idx).lower()
-                if row_id_lower == idx_text:
-                    matching_row_idx = idx
-                    best_match_score = 1.0
-                    break
-                elif row_id_lower in idx_text or idx_text in row_id_lower:
-                    if best_match_score < 0.8:
-                        matching_row_idx = idx
-                        best_match_score = 0.8
-            except Exception as e:
-                logger.debug(f"Error matching row index {idx}: {e}")
-                continue
+        # Use DSPy intelligent matching for row identification
+        try:
+            # Get document context for better matching
+            doc_context = (
+                f"Financial table with {len(df)} rows and {len(df.columns)} columns"
+            )
+            if current_record and current_record.doc:
+                doc_context += f". Context: {current_record.doc.pre_text[:200]}"
 
-        # If no exact match, try fuzzy matching on index with improved logic
-        if matching_row_idx is None or best_match_score < 0.8:
+            # Use DSPy smart matching
+            best_match, confidence, reasoning = _query_parser.smart_match_row_column(
+                target_description=row_identifier,
+                available_options=available_rows,
+                table_context=doc_context,
+                search_type="row",
+            )
+
+            if best_match and confidence > 0.4:  # Accept if reasonable confidence
+                matching_row_idx = best_match
+                best_match_score = confidence
+                logger.info(
+                    f"DSPy row match: '{row_identifier}' -> '{best_match}' (confidence: {confidence:.2f}, reasoning: {reasoning})"
+                )
+            else:
+                logger.debug(
+                    f"DSPy row matching low confidence: {confidence}, reasoning: {reasoning}"
+                )
+
+        except Exception as e:
+            logger.debug(f"DSPy row matching failed: {e}")
+
+        # Fallback to traditional matching if DSPy fails or gives low confidence
+        if matching_row_idx is None or best_match_score < 0.5:
+            logger.debug("Using fallback row matching")
+
+            # First try exact index match
             for idx in df.index:
                 try:
                     idx_text = str(idx).lower()
-                    # Split both strings and check for word matches
-                    row_words = set(row_id_lower.split())
-                    idx_words = set(idx_text.split())
-
-                    # Calculate word overlap score
-                    if row_words and idx_words:
-                        overlap = len(row_words.intersection(idx_words))
-                        union_size = len(row_words.union(idx_words))
-                        score: float = overlap / union_size if union_size > 0 else 0.0
-
-                        # Boost score for important financial terms using DSPy
-                        financial_boost: float = 0.0
-                        from ..core.financial_terms import get_financial_terms_instance
-
-                        # Check if both contain financial terms
-                        terms_instance = get_financial_terms_instance()
-                        row_terms = terms_instance.extract_financial_terms(row_id_lower)
-                        idx_terms = terms_instance.extract_financial_terms(idx_text)
-
-                        # Boost score for matching financial terms
-                        matching_terms = row_terms.intersection(idx_terms)
-                        financial_boost = min(0.9, len(matching_terms) * 0.3)
-
-                        final_score = min(1.0, score + financial_boost)
-
-                        # Accept if good overlap (>40%) or strong financial term match
-                        if final_score > 0.4 and final_score > best_match_score:
+                    if row_id_lower == idx_text:
+                        matching_row_idx = idx
+                        best_match_score = 1.0
+                        break
+                    elif row_id_lower in idx_text or idx_text in row_id_lower:
+                        if best_match_score < 0.8:
                             matching_row_idx = idx
-                            best_match_score = final_score
-
+                            best_match_score = 0.8
                 except Exception as e:
-                    logger.debug(f"Error in fuzzy matching for row {idx}: {e}")
+                    logger.debug(f"Error matching row index {idx}: {e}")
                     continue
 
-        # If still no match, try finding by row content with safer iteration
-        if matching_row_idx is None:
-            for idx in df.index:
-                try:
-                    row = df.loc[idx]
-                    # Safely convert row values to string for searching
-                    row_values = []
-                    for val in row.values:
-                        try:
-                            if pd.notna(val):
-                                row_values.append(str(val).lower())
-                        except Exception:
-                            continue
+            # Enhanced fuzzy matching if still no good match
+            if matching_row_idx is None or best_match_score < 0.7:
+                for idx in df.index:
+                    try:
+                        idx_text = str(idx).lower()
+                        # Calculate fuzzy similarity using ratio
+                        from difflib import SequenceMatcher
 
-                    row_text = " ".join(row_values)
+                        similarity_score = SequenceMatcher(
+                            None, row_id_lower, idx_text
+                        ).ratio()
 
-                    # Check if row identifier appears in row content
-                    if row_id_lower in row_text:
-                        matching_row_idx = idx
-                        break
-
-                    # Also try word matching for financial terms
-                    row_words = set(row_text.split())
-                    search_words = set(row_id_lower.split())
-
-                    if row_words and search_words:
-                        overlap = len(row_words.intersection(search_words))
-                        # Require at least 2 word matches or 1 strong financial term match
-                        if overlap >= 2 or any(
-                            term in row_text
-                            for term in [
-                                "credit",
-                                "facility",
-                                "debt",
-                                "notes",
-                                "senior",
-                            ]
+                        if (
+                            similarity_score > best_match_score
+                            and similarity_score > 0.4
                         ):
                             matching_row_idx = idx
-                            break
+                            best_match_score = similarity_score
 
-                except Exception as e:
-                    logger.debug(f"Error searching row content for {idx}: {e}")
-                    continue
+                    except Exception as e:
+                        logger.debug(f"Error in fuzzy matching for row {idx}: {e}")
+                        continue
 
         if matching_row_idx is None:
             return f"ERROR: Row '{row_identifier}' not found. Available rows: {available_rows[:10]}{'...' if len(available_rows) > 10 else ''}"

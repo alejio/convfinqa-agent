@@ -8,6 +8,7 @@ import time
 from functools import wraps
 from typing import Any
 
+import dspy
 from dotenv import load_dotenv
 from smolagents import CodeAgent, LiteLLMModel
 
@@ -15,7 +16,11 @@ from ..core.conversation import ConversationManager
 from ..core.logger import get_logger
 from ..core.models import Record
 from ..data.loader import DataLoader
-from .dspy_signatures import build_dspy_prompt, build_initial_dspy_prompt
+from .dspy_signatures import (
+    ConversationalReferenceResolution,
+    build_dspy_prompt,
+    build_initial_dspy_prompt,
+)
 from .tools import (
     calculate_change,
     compute,
@@ -49,7 +54,6 @@ def with_rate_limiting(max_retries: int = 5, base_delay: float = 1.0) -> Any:
                     return func(*args, **kwargs)
                 except Exception as e:
                     error_str = str(e).lower()
-                    # Check for rate limiting errors
                     if any(
                         keyword in error_str
                         for keyword in ["rate", "429", "too many requests", "quota"]
@@ -60,14 +64,12 @@ def with_rate_limiting(max_retries: int = 5, base_delay: float = 1.0) -> Any:
                             )
                             raise
 
-                        # Exponential backoff with jitter
                         delay = base_delay * (2**attempt) + random.uniform(0, 1)
                         logger.warning(
                             f"Rate limited (attempt {attempt + 1}/{max_retries}), retrying in {delay:.2f}s: {e}"
                         )
                         time.sleep(delay)
                     else:
-                        # Non-rate-limiting error, don't retry
                         raise
             return None
 
@@ -99,15 +101,18 @@ class ConvFinQAAgent:
         self.conversation_manager = ConversationManager()
         self.conversation_history: list[dict[str, str]] = []
 
-        # Initialize smolagents CodeAgent with OpenAI model
         try:
             llm_model = LiteLLMModel(
                 model=f"openai/{model}",
-                model_id=f"openai/{model}",  # Explicitly set model_id to avoid default
+                model_id=f"openai/{model}",
             )
             self.agent = CodeAgent(
                 tools=self.tools,
                 model=llm_model,
+            )
+            # Add reference resolution tool
+            self.reference_resolver = dspy.ChainOfThought(
+                ConversationalReferenceResolution
             )
             logger.info(
                 f"Initialized ConvFinQA agent with smolagents CodeAgent, model: {model}"
@@ -116,7 +121,6 @@ class ConvFinQAAgent:
             logger.error(f"Failed to initialize smolagents CodeAgent: {e}")
             raise
 
-        # Check for OpenAI API key
         if not os.getenv("OPENAI_API_KEY"):
             logger.warning("OPENAI_API_KEY not found in environment variables")
 
@@ -151,25 +155,18 @@ class ConvFinQAAgent:
             The agent's response.
         """
         try:
-            # Build contextual message with conversation history
             contextual_message = self._build_contextual_message(message)
-
-            # Pass contextual message to smolagents CodeAgent
             response = self.agent.run(contextual_message)
             response_str = str(response)
 
-            # Extract entities from response for conversation tracking
             referenced_entities = self._extract_entities_from_response(response_str)
-
-            # Store conversation turn
             self.conversation_manager.add_turn(
                 user_message=message,
                 assistant_response=response_str,
-                tool_calls=[],  # smolagents handles tool calls internally
+                tool_calls=[],
                 referenced_entities=referenced_entities,
             )
 
-            # Keep legacy conversation history for backward compatibility
             self.conversation_history.append(
                 {"user": message, "assistant": response_str}
             )
@@ -185,12 +182,31 @@ class ConvFinQAAgent:
             logger.error(error_msg)
             return f"I encountered an error while processing your question: {str(e)}"
 
-    def get_conversation_history(self) -> list[dict[str, str]]:
-        """Get the conversation history.
+    def _resolve_references(self, message: str, conversation_history: str) -> str:
+        """Resolve references in the message using the conversation history."""
+        try:
+            if not conversation_history.strip():
+                return message  # No history to resolve from
 
-        Returns:
-            List of conversation turns with user messages and assistant responses.
-        """
+            # Use the DSPy signature to resolve references
+            resolved = self.reference_resolver(
+                current_question=message,
+                conversation_history=conversation_history,
+            )
+
+            # Log the resolution
+            if resolved.resolved_question.lower() != message.lower():
+                logger.info(
+                    f"Resolved query: '{message}' -> '{resolved.resolved_question}'"
+                )
+
+            return str(resolved.resolved_question)
+        except Exception as e:
+            logger.error(f"Failed to resolve references: {e}")
+            return message  # Fallback to original message
+
+    def get_conversation_history(self) -> list[dict[str, str]]:
+        """Get the conversation history."""
         return self.conversation_history.copy()
 
     def clear_history(self) -> None:
@@ -207,47 +223,31 @@ class ConvFinQAAgent:
         return None
 
     def _build_contextual_message(self, message: str) -> str:
-        """Build a contextual message that includes conversation history.
-
-        Args:
-            message: The current user message
-
-        Returns:
-            Enhanced message with conversation context
-        """
+        """Build a contextual message that includes resolved conversation history."""
         if (
             not self.conversation_manager.current_state
             or not self.conversation_manager.current_state.turns
         ):
             return self._build_initial_message(message)
 
-        # Get recent conversation turns for context
         recent_turns = self.conversation_manager.current_state.turns[-3:]
-
-        # Always use token-optimized DSPy prompts
         context_parts = []
         for i, turn in enumerate(recent_turns, 1):
             context_parts.append(f"Q{i}: {turn.user_message}")
             context_parts.append(f"A{i}: {turn.assistant_response}")
         context_str = " | ".join(context_parts)
-        return build_dspy_prompt(message, context_str)
+
+        # Resolve references in the current message before creating the prompt
+        resolved_message = self._resolve_references(message, context_str)
+
+        return build_dspy_prompt(resolved_message, context_str)
 
     def _build_initial_message(self, message: str) -> str:
         """Build message for initial conversation turn using token-optimized prompts."""
         return build_initial_dspy_prompt(message)
 
     def _extract_entities_from_response(self, response: str) -> list[str]:
-        """Extract financial entities mentioned in the response.
-
-        Args:
-            response: The agent's response
-
-        Returns:
-            List of entities found in the response
-        """
-        entities: list[str] = []
-
-        # Use DSPy-powered entity extraction
+        """Extract financial entities mentioned in the response."""
         from ..core.financial_terms import get_financial_terms_instance
 
         terms_instance = get_financial_terms_instance()
@@ -255,16 +255,10 @@ class ConvFinQAAgent:
         extracted_entities = terms_instance.extract_entities(
             response, conversation_context
         )
-        entities.extend(extracted_entities)
-
-        return entities
+        return extracted_entities
 
     def get_agent_info(self) -> dict[str, Any]:
-        """Get information about current agent configuration.
-
-        Returns:
-            Dictionary with agent configuration details.
-        """
+        """Get information about current agent configuration."""
         return {
             "model": self.model,
             "architecture": "smolagents CodeAgent",

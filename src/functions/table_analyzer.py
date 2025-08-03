@@ -44,28 +44,90 @@ class TableStructureAnalyzer:
         Returns:
             TableStructureAnalysis with insights and interpretation guide
         """
-        # Create table context for DSPy classification
-        table_context = (
-            f"Financial table with {df.shape[0]} rows and {df.shape[1]} columns"
-        )
+        if self.query_parser is None:
+            # Fallback to basic analysis if no query parser is available
+            return self._fallback_analysis(financial_table, df)
 
-        # Analyze columns for time series patterns using DSPy
-        time_columns = self._identify_time_columns(df.columns.tolist(), table_context)
+        # Use the powerful DSPy-based table structure analyzer
+        try:
+            row_labels = df.index.tolist() if hasattr(df.index, "tolist") else []
+            column_labels = df.columns.tolist()
+            sample_data = df.head(3).to_string()
+            doc_context = financial_table.table_schema.description or ""
 
-        # Analyze rows for financial metrics using DSPy
-        metric_rows = self._identify_metric_rows(
-            df.index.tolist() if hasattr(df, "index") else [], table_context
-        )
+            # Call the advanced DSPy analysis
+            analysis_results = self.query_parser.analyze_table_structure(
+                row_labels=row_labels,
+                column_labels=column_labels,
+                document_context=doc_context,
+                sample_data=sample_data,
+            )
 
-        # Determine primary structure
+            # Map results to the TableStructureAnalysis object
+            primary_structure = analysis_results.get("table_type", "unknown")
+            time_columns = self._identify_time_columns(
+                df.columns.tolist(), analysis_results
+            )
+            metric_rows = self._identify_metric_rows(
+                df.index.tolist(), analysis_results
+            )
+            data_types = self._analyze_data_types(financial_table)
+
+            interpretation_guide = self._generate_interpretation_guide(
+                primary_structure, time_columns, metric_rows, df.shape
+            )
+
+            confidence_map = {"high": 0.9, "medium": 0.6, "low": 0.3}
+            confidence = confidence_map.get(
+                analysis_results.get("confidence", "low"), 0.3
+            )
+
+            return TableStructureAnalysis(
+                primary_structure=primary_structure,
+                time_columns=time_columns,
+                metric_rows=metric_rows,
+                data_types=data_types,
+                interpretation_guide=interpretation_guide,
+                confidence=confidence,
+            )
+
+        except Exception:
+            # If DSPy analysis fails, revert to fallback
+            return self._fallback_analysis(financial_table, df)
+
+    def _identify_time_columns(
+        self, columns: list[str], analysis_results: dict[str, str]
+    ) -> list[str]:
+        """Identify time columns based on DSPy analysis results."""
+        time_axis = analysis_results.get("time_axis")
+        if time_axis == "columns":
+            # Heuristic: assume all columns are time columns if the axis is identified as such
+            return columns
+        return []
+
+    def _identify_metric_rows(
+        self, row_labels: list[str], analysis_results: dict[str, str]
+    ) -> list[str]:
+        """Identify metric rows based on DSPy analysis results."""
+        metric_axis = analysis_results.get("metric_axis")
+        if metric_axis == "rows":
+            # Heuristic: assume all rows are metric rows if the axis is identified as such
+            return row_labels
+        return []
+
+    def _fallback_analysis(
+        self, financial_table: FinancialTable, df: pd.DataFrame
+    ) -> TableStructureAnalysis:
+        """A fallback analysis method that doesn't rely on the query parser."""
+        time_columns = [
+            col for col in df.columns if self._fallback_time_column_check(str(col))
+        ]
+        metric_rows = [row for row in df.index if self._fallback_metric_check(str(row))]
+
         primary_structure, confidence = self._determine_primary_structure(
             time_columns, metric_rows, df.shape
         )
-
-        # Analyze data types
         data_types = self._analyze_data_types(financial_table)
-
-        # Generate dynamic interpretation guide
         interpretation_guide = self._generate_interpretation_guide(
             primary_structure, time_columns, metric_rows, df.shape
         )
@@ -79,59 +141,21 @@ class TableStructureAnalyzer:
             confidence=confidence,
         )
 
-    def _identify_time_columns(self, columns: list[str], context: str) -> list[str]:
-        """Identify columns that represent time periods using DSPy classification."""
-        time_columns = []
-
-        for col in columns:
-            if self.query_parser:
-                # Use DSPy classification
-                if self.query_parser.classify_time_column(str(col), context):
-                    time_columns.append(col)
-            else:
-                # Fallback to pattern-based classification
-                if self._fallback_time_column_check(str(col)):
-                    time_columns.append(col)
-
-        return time_columns
-
-    def _identify_metric_rows(self, row_labels: list[str], context: str) -> list[str]:
-        """Identify rows that represent financial metrics using DSPy classification."""
-        metric_rows = []
-
-        for row_label in row_labels:
-            if self.query_parser:
-                # Use DSPy classification
-                if self.query_parser.classify_financial_metric(str(row_label), context):
-                    metric_rows.append(row_label)
-            else:
-                # Fallback to pattern-based classification
-                if self._fallback_metric_check(str(row_label)):
-                    metric_rows.append(row_label)
-
-        return metric_rows
-
     def _fallback_time_column_check(self, column_name: str) -> bool:
         """Pattern-based fallback for time column identification."""
         import re
 
         column_lower = column_name.lower()
 
-        # Year patterns (more flexible than hardcoded list)
         if re.search(r"\b(19|20)[0-9]{2}\b", column_lower):
             return True
-
-        # Quarter patterns
         if re.search(r"\b(q[1-4]|quarter)\b", column_lower):
             return True
-
-        # Common time indicators (minimal set)
         time_words = ["year", "fy", "fiscal", "period", "month"]
         return any(word in column_lower for word in time_words)
 
     def _fallback_metric_check(self, label: str) -> bool:
         """Pattern-based fallback for financial metric identification."""
-        # Use DSPy-powered financial terms recognition
         from ..core.financial_terms import get_financial_terms_instance
 
         return get_financial_terms_instance().has_financial_content(label)
@@ -142,24 +166,17 @@ class TableStructureAnalyzer:
         """Determine the primary structure of the table."""
         rows, cols = shape
 
-        # Time series structure (years/periods as columns, metrics as rows)
         if len(time_columns) >= 2 and len(metric_rows) >= 1:
             confidence = min(
                 0.9, 0.5 + (len(time_columns) * 0.1) + (len(metric_rows) * 0.05)
             )
             return "time_series", confidence
-
-        # Metrics by categories (categories as columns, metrics as rows)
         elif rows > cols and len(metric_rows) > len(time_columns):
             confidence = 0.7
             return "metrics_by_categories", confidence
-
-        # Mixed structure
         elif len(time_columns) > 0 or len(metric_rows) > 0:
             confidence = 0.5
             return "mixed", confidence
-
-        # Unknown structure
         else:
             confidence = 0.2
             return "unknown", confidence
@@ -167,10 +184,8 @@ class TableStructureAnalyzer:
     def _analyze_data_types(self, financial_table: FinancialTable) -> dict[str, str]:
         """Analyze the data types of columns."""
         data_types: dict[str, str] = {}
-
         for col in financial_table.table_schema.columns:
             data_types[col.name] = str(col.column_type)
-
         return data_types
 
     def _generate_interpretation_guide(
@@ -182,7 +197,6 @@ class TableStructureAnalyzer:
     ) -> dict[str, str]:
         """Generate dynamic interpretation guide based on analysis."""
         rows, cols = shape
-
         guide = {}
 
         if primary_structure == "time_series":
@@ -223,5 +237,4 @@ class TableStructureAnalyzer:
                 "reading_guide": "Refer to the document context (pre_text and post_text) to understand data organization",
                 "analysis_suggestion": "Examine column headers and row labels manually for patterns",
             }
-
         return guide
