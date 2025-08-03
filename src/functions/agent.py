@@ -8,11 +8,12 @@ import time
 from functools import wraps
 from typing import Any
 
-import dspy
 from dotenv import load_dotenv
 from smolagents import CodeAgent, LiteLLMModel
 
 from ..core.conversation import ConversationManager
+from ..core.dspy_manager import get_dspy_manager
+from ..core.error_handler import ErrorResponseHandler
 from ..core.logger import get_logger
 from ..core.models import Record
 from ..data.loader import DataLoader
@@ -110,9 +111,12 @@ class ConvFinQAAgent:
                 tools=self.tools,
                 model=llm_model,
             )
-            # Add reference resolution tool
-            self.reference_resolver = dspy.ChainOfThought(
-                ConversationalReferenceResolution
+            # Add reference resolution tool using unified DSPy manager
+            dspy_manager = get_dspy_manager(model)
+            self.reference_resolver = dspy_manager.get_component(
+                "conversational_reference_resolution",
+                ConversationalReferenceResolution,
+                "ChainOfThought",
             )
             logger.info(
                 f"Initialized ConvFinQA agent with smolagents CodeAgent, model: {model}"
@@ -180,7 +184,7 @@ class ConvFinQAAgent:
         except Exception as e:
             error_msg = f"Error processing chat message: {str(e)}"
             logger.error(error_msg)
-            return f"I encountered an error while processing your question: {str(e)}"
+            return ErrorResponseHandler.agent_error(str(e))
 
     def _resolve_references(self, message: str, conversation_history: str) -> str:
         """Resolve references in the message using the conversation history."""

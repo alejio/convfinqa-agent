@@ -51,10 +51,10 @@ class NumericExtractor:
         # Order matters - more specific patterns first
         patterns = [
             r"(?:^|\s)(\([-+]?\d+(?:,\d{3})*(?:\.\d+)?\))",  # (123.45) - parentheses for negatives
-            r"(?:^|\s)\$?([-+]?\d{1,3}(?:,\d{3})*\.\d+)%?(?:\s|$)",  # Decimals with dollars/% like $123.45 or 60.94
-            r"(?:^|\s)\$?([-+]?\d*\.\d+)(?:\s|$)",  # Decimals like .45 or 123.45
-            r"(?:^|\s)\$?([-+]?\d{1,3}(?:,\d{3})*)%?(?:\s|$)",  # Large integers with commas
-            r"(?:^|\s)([-+]?\d+)(?:\s|$)",  # Regular integers (but avoid years)
+            r"\$?([-+]?\d{1,3}(?:,\d{3})*\.\d+)%?",  # Decimals with dollars/% like $123.45 or 60.94
+            r"\$?([-+]?\d*\.\d+)",  # Decimals like .45 or 123.45
+            r"\$?([-+]?\d{1,3}(?:,\d{3})*)%?",  # Large integers with commas
+            r"([-+]?\d+)",  # Regular integers (but avoid years)
         ]
 
         best_match = ""
@@ -201,3 +201,77 @@ class NumericExtractor:
         except ValueError:
             # If conversion fails, fall back to string comparison
             return actual_num == expected_num
+
+    @staticmethod
+    def convert_to_float_with_formatting(value: str | float | int) -> float:
+        """
+        Convert value to float handling all financial formatting patterns.
+
+        Consolidates all the numeric conversion logic scattered across tools.py,
+        calculate_change, and other modules.
+
+        Args:
+            value: Value to convert (can be string, float, or int)
+
+        Returns:
+            Converted float value
+
+        Raises:
+            ValueError: If value cannot be converted to float
+        """
+        if isinstance(value, int | float):
+            return float(value)
+
+        if not isinstance(value, str):
+            value = str(value)
+
+        # Remove whitespace
+        value = value.strip()
+
+        if not value:
+            raise ValueError("Empty string cannot be converted to float")
+
+        # Handle common financial formatting
+        # Remove currency symbols, commas, percentage signs
+        cleaned = value.replace("$", "").replace(",", "").replace("%", "")
+
+        # Handle parentheses notation for negative numbers: (123) -> -123
+        if cleaned.startswith("(") and cleaned.endswith(")"):
+            cleaned = "-" + cleaned[1:-1]
+
+        # Try conversion
+        try:
+            return float(cleaned)
+        except ValueError as e:
+            raise ValueError(f"Cannot convert '{value}' to float: {e}") from e
+
+    @staticmethod
+    def clean_for_display(value: str | float | int) -> str:
+        """
+        Clean numeric value for display purposes.
+
+        Consolidates the cleaning logic from final_answer tool and other display functions.
+
+        Args:
+            value: Value to clean
+
+        Returns:
+            Cleaned string representation
+        """
+        if isinstance(value, int | float):
+            return str(value)
+
+        if not isinstance(value, str):
+            value = str(value)
+
+        # Remove common prefixes/suffixes while preserving the number
+        cleaned = value.strip()
+        cleaned = cleaned.replace("$", "").replace("%", "").replace(",", "")
+
+        # Validate it's a number
+        try:
+            float(cleaned)
+            return cleaned
+        except ValueError:
+            # If we can't parse it as a number, return original stripped value
+            return value.strip()

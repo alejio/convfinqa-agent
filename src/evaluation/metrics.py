@@ -25,6 +25,7 @@ from rich.progress import (
 )
 
 from ..core.logger import get_logger
+from ..core.numeric_utils import NumericExtractor
 
 logger = get_logger(__name__)
 console = Console()
@@ -101,14 +102,10 @@ class ExecutionAccuracyMetric(BaseMetric):
 
     def _extract_numeric_value(self, text: str) -> str | None:
         """Extract the primary numeric value from text using shared utility."""
-        from ..core.numeric_utils import NumericExtractor
-
         return NumericExtractor.extract_primary_numeric_value(text)
 
     def _numeric_match(self, actual_num: str | None, expected_num: str | None) -> bool:
         """Check if two numeric values match exactly using shared utility."""
-        from ..core.numeric_utils import NumericExtractor
-
         return NumericExtractor.numeric_match(actual_num, expected_num)
 
 
@@ -590,8 +587,6 @@ def calculate_execution_accuracy(
 
 def _extract_numeric_value_basic(text: str) -> str | None:
     """Basic numeric extraction fallback when DSPy is not available."""
-    from ..core.numeric_utils import NumericExtractor
-
     return NumericExtractor.extract_basic_numeric_value(text)
 
 
