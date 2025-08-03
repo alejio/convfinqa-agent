@@ -42,6 +42,22 @@ def _get_current_data_loader() -> DataLoader | None:
     return getattr(_thread_local, "current_data_loader", None)
 
 
+def _error_response(
+    message: str, code: str | None = None, details: Any | None = None
+) -> str:
+    """Return a consistent JSON-formatted error response."""
+    err: dict[str, Any] = {
+        "status": "error",
+        "error": message,
+        "message": message,
+    }
+    if code is not None:
+        err["code"] = code
+    if details is not None:
+        err["details"] = details
+    return json.dumps(err)
+
+
 def _clean_math_expression(expression: str) -> str | None:
     """Clean mathematical expression for safe evaluation."""
     try:
@@ -71,7 +87,7 @@ def list_tables(compact: bool = False) -> str:
     """
     current_record = _get_current_record()
     if current_record is None:
-        return json.dumps({"error": "No record context set"})
+        return _error_response("No record context set", code="NO_CONTEXT")
 
     try:
         table_names = current_record.get_table_names()
@@ -107,7 +123,7 @@ def list_tables(compact: bool = False) -> str:
     except Exception as e:
         error_msg = f"Error listing tables: {str(e)}"
         logger.error(error_msg)
-        return json.dumps({"error": error_msg})
+        return _error_response(error_msg, code="LIST_TABLES_ERROR")
 
 
 @tool
@@ -126,10 +142,10 @@ def show_table(table_name: str = "financial_data", compact: bool = False) -> str
     current_data_loader = _get_current_data_loader()
 
     if current_record is None:
-        return json.dumps({"error": "No record context set"})
+        return _error_response("No record context set", code="NO_CONTEXT")
 
     if current_data_loader is None:
-        return json.dumps({"error": "No data loader context set"})
+        return _error_response("No data loader context set", code="NO_DATA_LOADER")
 
     try:
         # Get the financial table
@@ -180,11 +196,10 @@ def show_table(table_name: str = "financial_data", compact: bool = False) -> str
         return json.dumps(result)
 
     except Exception as e:
-        return json.dumps(
-            {
-                "error": f"Failed to show table: {str(e)}",
-                "available_tables": ["financial_data"],
-            }
+        return _error_response(
+            f"Failed to show table: {str(e)}",
+            code="SHOW_TABLE_ERROR",
+            details={"available_tables": ["financial_data"]},
         )
 
 
@@ -207,7 +222,7 @@ def query_table(
     """
     current_record = _get_current_record()
     if current_record is None:
-        return json.dumps({"error": "No record context set"})
+        return _error_response("No record context set", code="NO_CONTEXT")
 
     try:
         financial_table = current_record.get_financial_table()
@@ -288,8 +303,8 @@ def query_table(
                     aggregated_data = {}
                     for col in target_numeric:
                         try:
-                            total = df[col].sum()
-                            aggregated_data[f"{col}_total"] = total
+                            # Compute several aggregate statistics for richer answers
+                            aggregated_data[f"{col}_total"] = df[col].sum()
                         except Exception:
                             continue
 
@@ -359,7 +374,7 @@ def query_table(
     except Exception as e:
         error_msg = f"Error querying table: {str(e)}"
         logger.error(error_msg)
-        return json.dumps({"error": error_msg})
+        return _error_response(error_msg, code="QUERY_TABLE_ERROR")
 
 
 @tool
@@ -371,7 +386,7 @@ def compute(expression: str) -> str:
     """
     current_record = _get_current_record()
     if current_record is None:
-        return json.dumps({"error": "No record context set"})
+        return _error_response("No record context set", code="NO_CONTEXT")
 
     try:
         # Get table context for DSPy parsing
@@ -436,6 +451,7 @@ def compute(expression: str) -> str:
                     ast.Sub: operator.sub,
                     ast.Mult: operator.mul,
                     ast.Div: operator.truediv,
+                    ast.Pow: operator.pow,
                 }
                 unary_ops: dict[type, Callable[[float], float]] = {
                     ast.USub: operator.neg,
@@ -560,7 +576,7 @@ def compute(expression: str) -> str:
                     if num2 != 0:
                         result_val = num1 / num2
                     else:
-                        return "ERROR: Division by zero"
+                        return _error_response("Division by zero", code="DIV_ZERO")
                 # Default to first number if no clear operation
                 else:
                     result_val = num1
@@ -576,12 +592,15 @@ def compute(expression: str) -> str:
             logger.debug(f"Basic arithmetic failed: {e}")
 
         # If all else fails, return a clear error
-        return f"ERROR: Unable to compute expression '{expression}'. Please use simpler mathematical expressions or check syntax."
+        return _error_response(
+            f"Unable to compute expression '{expression}'. Please use simpler mathematical expressions or check syntax.",
+            code="UNABLE_TO_COMPUTE",
+        )
 
     except Exception as e:
-        error_msg = f"ERROR: Error computing expression '{expression}': {str(e)}"
+        error_msg = f"Error computing expression '{expression}': {str(e)}"
         logger.error(error_msg)
-        return error_msg
+        return _error_response(error_msg, code="COMPUTE_ERROR")
 
 
 @tool
@@ -612,7 +631,9 @@ def calculate_change(
         except (ValueError, TypeError) as e:
             return json.dumps(
                 {
-                    "error": f"Invalid numeric values: old_value='{old_value}', new_value='{new_value}', error: {str(e)}"
+                    "status": "error",
+                    "error": f"Invalid numeric values: old_value='{old_value}', new_value='{new_value}', error: {str(e)}",
+                    "code": "INVALID_NUMERIC",
                 }
             )
 
@@ -654,7 +675,9 @@ def calculate_change(
         return str(standard_change)
 
     except Exception as e:
-        return json.dumps({"error": f"Error calculating change: {str(e)}"})
+        return _error_response(
+            f"Error calculating change: {str(e)}", code="CALCULATE_CHANGE_ERROR"
+        )
 
 
 @tool
@@ -760,7 +783,7 @@ def get_table_value(
     """
     current_record = _get_current_record()
     if current_record is None:
-        return "ERROR: No record context set"
+        return _error_response("No record context set", code="NO_CONTEXT")
 
     try:
         financial_table = current_record.get_financial_table()
@@ -768,7 +791,10 @@ def get_table_value(
 
         # Input validation
         if not row_identifier or not column_identifier:
-            return "ERROR: Both row_identifier and column_identifier are required"
+            return _error_response(
+                "Both row_identifier and column_identifier are required",
+                code="MISSING_IDENTIFIERS",
+            )
 
         # Convert identifiers to lowercase for matching
         row_id_lower = row_identifier.lower().strip()
@@ -798,7 +824,11 @@ def get_table_value(
                     break
 
         if matching_col is None:
-            return f"ERROR: Column '{column_identifier}' not found. Available columns: {[str(col) for col in available_cols]}"
+            return _error_response(
+                f"Column '{column_identifier}' not found.",
+                code="COLUMN_NOT_FOUND",
+                details={"available_columns": [str(col) for col in available_cols]},
+            )
 
         # Enhanced DSPy-powered row matching
         matching_row_idx = None
@@ -886,7 +916,11 @@ def get_table_value(
                         continue
 
         if matching_row_idx is None:
-            return f"ERROR: Row '{row_identifier}' not found. Available rows: {available_rows[:10]}{'...' if len(available_rows) > 10 else ''}"
+            return _error_response(
+                f"Row '{row_identifier}' not found.",
+                code="ROW_NOT_FOUND",
+                details={"available_rows_preview": available_rows[:10]},
+            )
 
         # Get the value with better error handling
         try:
@@ -895,11 +929,14 @@ def get_table_value(
                 f"Found value at row '{matching_row_idx}' column '{matching_col}': {value}"
             )
         except Exception as e:
-            return f"ERROR: Failed to retrieve value at row '{matching_row_idx}', column '{matching_col}': {str(e)}"
+            return _error_response(
+                f"Failed to retrieve value at row '{matching_row_idx}', column '{matching_col}': {str(e)}",
+                code="VALUE_RETRIEVE_ERROR",
+            )
 
         # Clean and return as string
         if pd.isna(value):
-            return "ERROR: Value is null/missing"
+            return _error_response("Value is null/missing", code="NULL_VALUE")
 
         # Convert to clean numeric string with better error handling
         try:
@@ -930,6 +967,6 @@ def get_table_value(
             return str(value).strip()
 
     except Exception as e:
-        error_msg = f"ERROR: Unexpected error in get_table_value: {str(e)}"
+        error_msg = f"Unexpected error in get_table_value: {str(e)}"
         logger.error(error_msg)
-        return error_msg
+        return _error_response(error_msg, code="GET_TABLE_VALUE_ERROR")
