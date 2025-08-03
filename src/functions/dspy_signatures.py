@@ -173,6 +173,13 @@ CRITICAL RULES:
 - For changes: use calculate_change() with "simple" mode
 - Always end with final_answer() containing only the numeric result
 - Resolve "it", "that", "same" from conversation context
+- Error handling: `get_table_value` may fail. Always wrap it in a `try-except` block.
+  Example:
+  try:
+      value = float(get_table_value(...))
+  except (ValueError, TypeError):
+      value = None
+      print("Could not retrieve value, trying again or using a different approach.")
 
 TOOLS: show_table, get_table_value, calculate_change, compute, validate_data_selection, final_answer
 
@@ -199,6 +206,13 @@ KEY PRINCIPLES:
 - Reference line items by proper names (e.g., "senior notes", "total revenue")
 - For changes/differences: use calculate_change()
 - Always end with final_answer() containing just the number
+- Error handling: `get_table_value` may fail. Always wrap it in a `try-except` block.
+  Example:
+  try:
+      value = float(get_table_value(...))
+  except (ValueError, TypeError):
+      value = None
+      print("Could not retrieve value, trying again or using a different approach.")
 
 TOOLS: show_table, get_table_value, calculate_change, compute, validate_data_selection, final_answer
 

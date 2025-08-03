@@ -621,64 +621,37 @@ def calculate_change(
         cost_change = (
             old_value - new_value
         )  # For costs: old - new (decrease is positive)
-        absolute_change = abs(new_value - old_value)
         percentage_change = (
             ((new_value - old_value) / old_value) * 100 if old_value != 0 else 0
         )
 
-        # Simple mode: return just the recommended numeric value
+        recommended_change: float | None = None
         if change_type == "simple":
             # Auto-detect the most likely correct interpretation
             if old_value < 0 and new_value < 0:
                 # For costs (negative values), use cost convention
-                return str(cost_change)
+                recommended_change = cost_change
             else:
                 # Standard convention (new - old)
-                return str(standard_change)
-
-        # Full JSON mode (original behavior)
-        result: dict[str, Any] = {
-            "old_value": old_value,
-            "new_value": new_value,
-            "standard_change": standard_change,
-            "cost_change": cost_change,
-            "absolute_change": absolute_change,
-            "percentage_change": percentage_change,
-            "recommended": None,
-            "data_validation_warning": None,
-            "reasoning": None,
-        }
-
-        # Add data validation warnings for common errors
-        if abs(standard_change) < 10 and abs(cost_change) < 10:
-            result["data_validation_warning"] = (
-                "⚠️  Small change detected. If question asks about 'senior notes' or specific instruments, verify you're using the right table row, not aggregate/general values."
-            )
-
-        # Auto-detect the most likely correct interpretation
-        if change_type == "auto":
+                recommended_change = standard_change
+        elif change_type == "auto":
             # For costs (negative values), use cost convention
             if old_value < 0 and new_value < 0:
-                result["recommended"] = cost_change
-                result["reasoning"] = (
-                    "Using cost convention (old - new) for negative values"
-                )
+                recommended_change = cost_change
             else:
-                result["recommended"] = standard_change
-                result["reasoning"] = (
-                    "Using standard convention (new - old) for positive values"
-                )
+                recommended_change = standard_change
         elif change_type == "cost":
-            result["recommended"] = cost_change
-            result["reasoning"] = "Using cost convention (old - new)"
+            recommended_change = cost_change
         elif change_type == "standard":
-            result["recommended"] = standard_change
-            result["reasoning"] = "Using standard convention (new - old)"
+            recommended_change = standard_change
         elif change_type == "percentage":
-            result["recommended"] = percentage_change
-            result["reasoning"] = "Using percentage change"
+            recommended_change = percentage_change
 
-        return json.dumps(result)
+        if recommended_change is not None:
+            return str(recommended_change)
+
+        # Fallback to standard change if type is unknown
+        return str(standard_change)
 
     except Exception as e:
         return json.dumps({"error": f"Error calculating change: {str(e)}"})
