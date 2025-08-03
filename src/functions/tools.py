@@ -10,8 +10,10 @@ from typing import Any
 import pandas as pd
 from smolagents import tool
 
+from ..core.error_handler import ErrorResponseHandler
 from ..core.logger import get_logger
 from ..core.models import Record
+from ..core.numeric_utils import NumericExtractor
 from ..data.loader import DataLoader
 from .query_parser import EnhancedQueryParser
 from .table_analyzer import TableStructureAnalyzer
@@ -46,16 +48,7 @@ def _error_response(
     message: str, code: str | None = None, details: Any | None = None
 ) -> str:
     """Return a consistent JSON-formatted error response."""
-    err: dict[str, Any] = {
-        "status": "error",
-        "error": message,
-        "message": message,
-    }
-    if code is not None:
-        err["code"] = code
-    if details is not None:
-        err["details"] = details
-    return json.dumps(err)
+    return ErrorResponseHandler.tool_error(message, code, details)
 
 
 def _clean_math_expression(expression: str) -> str | None:
@@ -622,19 +615,14 @@ def calculate_change(
         or simple numeric result if change_type="simple"
     """
     try:
-        # Convert inputs to floats (handle string inputs from get_table_value)
+        # Convert inputs to floats using unified numeric processor
         try:
-            if isinstance(old_value, str):
-                old_value = float(old_value.replace("$", "").replace(",", "").strip())
-            if isinstance(new_value, str):
-                new_value = float(new_value.replace("$", "").replace(",", "").strip())
-        except (ValueError, TypeError) as e:
-            return json.dumps(
-                {
-                    "status": "error",
-                    "error": f"Invalid numeric values: old_value='{old_value}', new_value='{new_value}', error: {str(e)}",
-                    "code": "INVALID_NUMERIC",
-                }
+            old_value = NumericExtractor.convert_to_float_with_formatting(old_value)
+            new_value = NumericExtractor.convert_to_float_with_formatting(new_value)
+        except ValueError as e:
+            return ErrorResponseHandler.validation_error(
+                f"Invalid numeric values: old_value='{old_value}', new_value='{new_value}', error: {str(e)}",
+                field="numeric_values",
             )
 
         # Calculate all possible interpretations
@@ -675,8 +663,8 @@ def calculate_change(
         return str(standard_change)
 
     except Exception as e:
-        return _error_response(
-            f"Error calculating change: {str(e)}", code="CALCULATE_CHANGE_ERROR"
+        return ErrorResponseHandler.calculation_error(
+            f"Error calculating change: {str(e)}", "CALCULATE_CHANGE_ERROR"
         )
 
 
@@ -750,19 +738,7 @@ def final_answer(answer: str) -> str:
     Returns:
         The clean numeric answer
     """
-    try:
-        # Clean the answer of common formatting
-        cleaned = str(answer).strip()
-
-        # Remove common prefixes/suffixes
-        cleaned = cleaned.replace("$", "").replace("%", "").replace(",", "")
-
-        # Try to parse as float to validate it's a number
-        float(cleaned)
-
-        return cleaned
-    except (ValueError, TypeError):
-        return str(answer).strip()
+    return NumericExtractor.clean_for_display(answer)
 
 
 @tool
@@ -938,30 +914,11 @@ def get_table_value(
         if pd.isna(value):
             return _error_response("Value is null/missing", code="NULL_VALUE")
 
-        # Convert to clean numeric string with better error handling
+        # Convert to clean numeric string using unified processor
         try:
-            # Try to convert to float first
-            if isinstance(value, int | float):
-                clean_value = float(value)
-                return str(clean_value)
-
-            # If it's a string, try to clean and convert
-            value_str = str(value).strip()
-
-            # Remove common formatting
-            cleaned_str = (
-                value_str.replace(",", "")
-                .replace("$", "")
-                .replace("%", "")
-                .replace("(", "-")
-                .replace(")", "")
-            )
-
-            # Try to convert to float
-            clean_value = float(cleaned_str)
+            clean_value = NumericExtractor.convert_to_float_with_formatting(value)
             return str(clean_value)
-
-        except (ValueError, TypeError) as e:
+        except ValueError as e:
             logger.debug(f"Could not convert value to numeric: {value}, error: {e}")
             # Return as string if can't convert to number
             return str(value).strip()
